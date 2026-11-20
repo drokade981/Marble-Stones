@@ -11,7 +11,9 @@ RUN apk add --no-cache \
     bash \
     icu-dev \
     oniguruma-dev \
-    linux-headers
+    linux-headers \
+    pcre-dev \
+    ${PHPIZE_DEPS}
 
 # Install PHP extensions for MySQL, Redis and background jobs
 RUN docker-php-ext-install -j$(nproc) \
@@ -22,7 +24,10 @@ RUN docker-php-ext-install -j$(nproc) \
     intl \
     mbstring \
     pcntl \
-    opcache
+    opcache \
+    && pecl install redis \
+    && docker-php-ext-enable redis \
+    && apk del pcre-dev ${PHPIZE_DEPS}
 
 # Install Composer
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer

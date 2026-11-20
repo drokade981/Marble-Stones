@@ -113,3 +113,4 @@ class GeminiProvider implements AiProviderInterface
         return $fallback->synthesizeAnswer($message, $history, $toolResults, $user);
     }
 }
+
