@@ -1,0 +1,130 @@
+services:
+  # 1. Laravel Web Application & API
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: slaberp-app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      APP_NAME: "SlabERP"
+      APP_ENV: local
+      APP_KEY: base64:a0B1c2D3e4F5g6H7i8J9k0L1m2N3o4P5q6R7s8T9u0V=
+      APP_DEBUG: "true"
+      APP_URL: http://localhost:8000
+      LOG_CHANNEL: stack
+      DB_CONNECTION: pgsql
+      DB_HOST: database
+      DB_PORT: 5432
+      DB_DATABASE: laravel_erp
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      BROADCAST_CONNECTION: log
+      CACHE_STORE: redis
+      SESSION_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      AI_PROVIDER: ${AI_PROVIDER:-local}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TS_AGENT_URL: http://ts-agent:3001
+    volumes:
+      - .:/var/www/html
+      - /var/www/html/vendor
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # 2. PostgreSQL Database
+  database:
+    image: postgres:16-alpine
+    container_name: slaberp-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: laravel_erp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 3. Redis Cache & Queues
+  redis:
+    image: redis:7-alpine
+    container_name: slaberp-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 4. Laravel Queue Worker
+  queue:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: slaberp-queue
+    restart: unless-stopped
+    command: ["php", "artisan", "queue:work", "--verbose", "--tries=3", "--timeout=90"]
+    environment:
+      APP_NAME: "SlabERP"
+      APP_ENV: local
+      APP_KEY: base64:a0B1c2D3e4F5g6H7i8J9k0L1m2N3o4P5q6R7s8T9u0V=
+      APP_DEBUG: "true"
+      DB_CONNECTION: pgsql
+      DB_HOST: database
+      DB_PORT: 5432
+      DB_DATABASE: laravel_erp
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      CACHE_STORE: redis
+      SESSION_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      AI_PROVIDER: ${AI_PROVIDER:-local}
+    volumes:
+      - .:/var/www/html
+      - /var/www/html/vendor
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      app:
+        condition: service_started
+
+  # 5. Standalone TypeScript AI Agent Microservice
+  ts-agent:
+    build:
+      context: ./ts-agent
+      dockerfile: Dockerfile
+    container_name: slaberp-ts-agent
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      LARAVEL_API_URL: http://app:8000
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    depends_on:
+      - app
+
+volumes:
+  pgdata:
+    driver: local
