@@ -7,6 +7,15 @@ if [ ! -f /var/www/html/.env ]; then
     cp /var/www/html/.env.example /var/www/html/.env
 fi
 
+# Ensure composer dependencies and autoloader are complete
+if [ ! -f /var/www/html/vendor/autoload.php ] || [ ! -d /var/www/html/vendor/predis/predis ]; then
+    echo "Synchronizing composer vendor packages..."
+    composer install --no-interaction --prefer-dist --optimize-autoloader
+else
+    # Refresh autoload classmap to ensure newly added packages are registered
+    composer dump-autoload --optimize --quiet || true
+fi
+
 # Generate APP_KEY if empty
 if ! grep -q "APP_KEY=base64" /var/www/html/.env; then
     echo "Generating application encryption key..."
@@ -35,7 +44,7 @@ if [ "$1" = "php" ] && [ "$2" = "artisan" ] && [ "$3" = "serve" ]; then
     echo "Running database migrations..."
     php artisan migrate --force
 
-    echo "Seeding ERP database with initial data (products, warehouses, suppliers, POs, users)..."
+    echo "Checking and seeding initial ERP data..."
     php artisan db:seed --force
 fi
 

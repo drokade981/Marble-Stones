@@ -36,7 +36,6 @@ services:
       TS_AGENT_URL: http://ts-agent:3001
     volumes:
       - .:/var/www/html
-      - /var/www/html/vendor
     depends_on:
       database:
         condition: service_healthy
@@ -106,7 +105,6 @@ services:
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-1.5-flash}
     volumes:
       - .:/var/www/html
-      - /var/www/html/vendor
     depends_on:
       database:
         condition: service_healthy

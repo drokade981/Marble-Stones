@@ -17,6 +17,12 @@ class DatabaseSeeder extends Seeder
 {
     public function run(): void
     {
+        // Check if database is already seeded
+        if (Product::where('sku', 'CAL-3CM-001')->exists()) {
+            $this->command?->info('Database is already seeded with ERP inventory and purchase orders. Skipping seeder.');
+            return;
+        }
+
         // 1. Create Users (Sales & Purchasing)
         $salesUser = User::firstOrCreate(
             ['email' => 'sales@example.com'],
