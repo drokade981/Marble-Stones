@@ -35,3 +35,4 @@ class Stock extends Model
         return $this->belongsTo(Warehouse::class);
     }
 }
+

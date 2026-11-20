@@ -155,3 +155,4 @@ class AssistantTest extends TestCase
         $this->assertStringContainsString('Adversarial instruction or system override attempt detected', $reply);
     }
 }
+

@@ -19,3 +19,4 @@ class AssistantChatRequest extends FormRequest
         ];
     }
 }
+

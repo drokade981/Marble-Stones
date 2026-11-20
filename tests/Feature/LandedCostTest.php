@@ -44,3 +44,4 @@ class LandedCostTest extends TestCase
         $this->assertEquals(6800.00, $result['total_landed_cost']);
     }
 }
+

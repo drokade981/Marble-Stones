@@ -49,3 +49,4 @@ class Product extends Model
         return (int) $this->stocks()->sum('slabs_on_hand');
     }
 }
+

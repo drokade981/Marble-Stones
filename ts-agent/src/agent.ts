@@ -1,3 +1,4 @@
+import axios from 'axios';
 import { ErpClient, UserProfile } from './erpClient';
 import { ToolExecutor } from './tools';
 
@@ -60,76 +61,91 @@ export class AssistantAgent {
     let reply = '';
     const toolsCalled: any[] = [];
 
-    // 1. Confirm draft PO
-    if (/^(confirm|yes\s*,?\s*confirm|save\s+it)\b/i.test(lower)) {
-      toolName = 'confirmDraftPurchaseOrder';
-      toolParams = { draft_token: session.pendingDraftToken };
-    }
-    // 2. Create draft PO
-    else if (/create\s+(a\s+)?draft\s+po|draft\s+po\s+for/i.test(lower)) {
-      toolName = 'createDraftPurchaseOrder';
-      let supplier = 'Supplier Y';
-      const sm = message.match(/from\s+([a-zA-Z0-9\s]+?)(?:\.|$)/i);
-      if (sm) supplier = sm[1].trim();
-
-      let qty = 20;
-      let prod = '2cm Carrara';
-      const qm = message.match(/(\d+)\s+slabs?\s+of\s+([a-zA-Z0-9\s]+?)(?:\s+from|\.|$)/i);
-      if (qm) {
-        qty = parseInt(qm[1], 10);
-        prod = qm[2].trim();
+    // Query Gemini if API key is provided
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        const geminiChoice = await this.queryGemini(message, session, user);
+        if (geminiChoice.toolName) {
+          toolName = geminiChoice.toolName;
+          toolParams = geminiChoice.toolParams || {};
+        }
+      } catch (geminiErr: any) {
+        console.warn('Gemini query error, using heuristic fallback:', geminiErr?.message || geminiErr);
       }
+    }
 
-      toolParams = {
-        supplier_name: supplier,
-        items: [{ product: prod, quantity: qty, unit_cost: 85.00 }],
-      };
-    }
-    // 3. Landed cost query
-    else if (/landed\s+cost|cost\s+per\s+slab/i.test(lower)) {
-      toolName = 'getLandedCost';
-      let poNumber = session.lastPoNumber || 'PO-1023';
-      const pm = message.match(/(PO-\d+)/i);
-      if (pm) poNumber = pm[1].toUpperCase();
-      session.lastPoNumber = poNumber;
-      toolParams = { po_number: poNumber };
-    }
-    // 4. Delayed or general PO search
-    else if (/purchase\s+orders?|orders?|po\b/i.test(lower) && (/delayed|late|overdue/i.test(lower) || /supplier/i.test(lower))) {
-      toolName = 'searchPurchaseOrders';
-      let supplierName: string | undefined = undefined;
-      const suppMatch = message.match(/supplier\s+([a-zA-Z0-9]+)/i);
-      if (suppMatch) {
-        supplierName = `Supplier ${suppMatch[1].toUpperCase()}`;
+    if (!toolName) {
+      // 1. Confirm draft PO
+      if (/^(confirm|yes\s*,?\s*confirm|save\s+it)\b/i.test(lower)) {
+        toolName = 'confirmDraftPurchaseOrder';
+        toolParams = { draft_token: session.pendingDraftToken };
       }
-      const delayedOnly = /delayed|late|overdue/i.test(lower);
-      toolParams = { supplier_name: supplierName, delayed_only: delayedOnly };
-    }
-    // 5. Follow-up warehouse question ("And in Dallas?", "What about Chicago?")
-    else if (/^(and|what\s+about|how\s+about)\s+(in\s+)?(houston|dallas|chicago)\??$/i.test(lower)) {
-      toolName = 'checkStock';
-      const m = lower.match(/(houston|dallas|chicago)/i);
-      const city = m ? m[1].charAt(0).toUpperCase() + m[1].slice(1) : 'Dallas';
-      toolParams = {
-        product: session.lastProduct || '3cm Calacatta',
-        warehouse: city,
-      };
-    }
-    // 6. Stock check ("How many 3cm Calacatta slabs do we have in Houston?")
-    else {
-      toolName = 'checkStock';
-      let warehouse: string | undefined = undefined;
-      const wm = message.match(/\b(in|at)\s+(houston|dallas|chicago)\b/i);
-      if (wm) {
-        warehouse = wm[2].charAt(0).toUpperCase() + wm[2].slice(1).toLowerCase();
-      }
+      // 2. Create draft PO
+      else if (/create\s+(a\s+)?draft\s+po|draft\s+po\s+for/i.test(lower)) {
+        toolName = 'createDraftPurchaseOrder';
+        let supplier = 'Supplier Y';
+        const sm = message.match(/from\s+([a-zA-Z0-9\s]+?)(?:\.|$)/i);
+        if (sm) supplier = sm[1].trim();
 
-      let product = message.replace(/(how many|slabs?|do we have|in stock|stock|in\s+(houston|dallas|chicago))/gi, '').trim();
-      if (!product || product.length < 3) {
-        product = session.lastProduct || '3cm Calacatta';
-      }
+        let qty = 20;
+        let prod = '2cm Carrara';
+        const qm = message.match(/(\d+)\s+slabs?\s+of\s+([a-zA-Z0-9\s]+?)(?:\s+from|\.|$)/i);
+        if (qm) {
+          qty = parseInt(qm[1], 10);
+          prod = qm[2].trim();
+        }
 
-      toolParams = { product, warehouse };
+        toolParams = {
+          supplier_name: supplier,
+          items: [{ product: prod, quantity: qty, unit_cost: 85.00 }],
+        };
+      }
+      // 3. Landed cost query
+      else if (/landed\s+cost|cost\s+per\s+slab/i.test(lower)) {
+        toolName = 'getLandedCost';
+        let poNumber = session.lastPoNumber || 'PO-1023';
+        const pm = message.match(/(PO-\d+)/i);
+        if (pm) poNumber = pm[1].toUpperCase();
+        session.lastPoNumber = poNumber;
+        toolParams = { po_number: poNumber };
+      }
+      // 4. Delayed or general PO search
+      else if (/purchase\s+orders?|orders?|po\b/i.test(lower) && (/delayed|late|overdue/i.test(lower) || /supplier/i.test(lower))) {
+        toolName = 'searchPurchaseOrders';
+        let supplierName: string | undefined = undefined;
+        const suppMatch = message.match(/supplier\s+([a-zA-Z0-9]+)/i);
+        if (suppMatch) {
+          supplierName = `Supplier ${suppMatch[1].toUpperCase()}`;
+        }
+        const delayedOnly = /delayed|late|overdue/i.test(lower);
+        toolParams = { supplier_name: supplierName, delayed_only: delayedOnly };
+      }
+      // 5. Follow-up warehouse question ("And in Dallas?", "What about Chicago?")
+      else if (/^(and|what\s+about|how\s+about)\s+(in\s+)?(houston|dallas|chicago)\??$/i.test(lower)) {
+        toolName = 'checkStock';
+        const m = lower.match(/(houston|dallas|chicago)/i);
+        const city = m ? m[1].charAt(0).toUpperCase() + m[1].slice(1) : 'Dallas';
+        toolParams = {
+          product: session.lastProduct || '3cm Calacatta',
+          warehouse: city,
+        };
+      }
+      // 6. Stock check ("How many 3cm Calacatta slabs do we have in Houston?")
+      else {
+        toolName = 'checkStock';
+        let warehouse: string | undefined = undefined;
+        const wm = message.match(/\b(in|at)\s+(houston|dallas|chicago)\b/i);
+        if (wm) {
+          warehouse = wm[2].charAt(0).toUpperCase() + wm[2].slice(1).toLowerCase();
+        }
+
+        let product = message.replace(/(how many|slabs?|do we have|in stock|stock|in\s+(houston|dallas|chicago))/gi, '').trim();
+        if (!product || product.length < 3) {
+          product = session.lastProduct || '3cm Calacatta';
+        }
+
+        toolParams = { product, warehouse };
+      }
     }
 
     // Execute tool against Laravel API with Sanctum Token
@@ -230,4 +246,62 @@ export class AssistantAgent {
         return JSON.stringify(data);
     }
   }
+
+  private async queryGemini(message: string, session: SessionState, user: UserProfile): Promise<{ toolName?: string; toolParams?: any }> {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return {};
+
+    const model = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+    const baseUrl = process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai';
+
+    const tools = this.toolExecutor.getDefinitions().map(t => ({
+      type: 'function',
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters,
+      },
+    }));
+
+    const messages = [
+      {
+        role: 'system',
+        content: `You are the ERP Assistant for a stone and quartz distributor. User: ${user.name}, Role: ${user.role}. Call tools to answer questions. Sales cannot see landed costs. Confirm draft PO before saving.`,
+      },
+      ...session.history.slice(-4).map(h => ({
+        role: h.role,
+        content: h.text,
+      })),
+      { role: 'user', content: message },
+    ];
+
+    const res = await axios.post(
+      `${baseUrl}/chat/completions`,
+      {
+        model,
+        messages,
+        tools,
+        tool_choice: 'auto',
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 15000,
+      }
+    );
+
+    const toolCalls = res.data?.choices?.[0]?.message?.tool_calls;
+    if (toolCalls && toolCalls.length > 0) {
+      const tc = toolCalls[0].function;
+      return {
+        toolName: tc.name,
+        toolParams: typeof tc.arguments === 'string' ? JSON.parse(tc.arguments) : tc.arguments,
+      };
+    }
+
+    return {};
+  }
 }
+

@@ -6,6 +6,7 @@ use App\Models\AssistantLog;
 use App\Models\User;
 use App\Services\Assistant\Contracts\AiProviderInterface;
 use App\Services\Assistant\Providers\AnthropicProvider;
+use App\Services\Assistant\Providers\GeminiProvider;
 use App\Services\Assistant\Providers\LocalHeuristicProvider;
 use App\Services\Assistant\Providers\OpenAiProvider;
 use Illuminate\Support\Facades\Log;
@@ -23,11 +24,12 @@ class AssistantService
      */
     public function resolveProvider(): AiProviderInterface
     {
-        $provider = env('AI_PROVIDER', 'local');
+        $provider = env('AI_PROVIDER', 'gemini');
 
         return match (strtolower($provider)) {
+            'gemini', 'google'               => new GeminiProvider(),
             'anthropic', 'claude', 'bedrock' => new AnthropicProvider(),
-            'openai', 'groq', 'gemini'       => new OpenAiProvider(),
+            'openai', 'groq'                 => new OpenAiProvider(),
             default                          => new LocalHeuristicProvider(),
         };
     }
@@ -148,3 +150,4 @@ class AssistantService
         ]);
     }
 }
+

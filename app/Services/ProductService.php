@@ -50,3 +50,4 @@ class ProductService
         return $query->first();
     }
 }
+

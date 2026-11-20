@@ -36,7 +36,10 @@ return [
     ],
 
     'ai' => [
-        'provider' => env('AI_PROVIDER', 'local'),
+        'provider' => env('AI_PROVIDER', 'gemini'),
+        'gemini_key' => env('GEMINI_API_KEY'),
+        'gemini_model' => env('GEMINI_MODEL', 'gemini-1.5-flash'),
+        'gemini_base_url' => env('GEMINI_BASE_URL', 'https://generativelanguage.googleapis.com/v1beta/openai'),
         'anthropic_key' => env('ANTHROPIC_API_KEY'),
         'anthropic_model' => env('ANTHROPIC_MODEL', 'claude-3-5-sonnet-20241022'),
         'openai_key' => env('OPENAI_API_KEY'),

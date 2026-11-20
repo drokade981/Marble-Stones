@@ -30,3 +30,4 @@ interface AiProviderInterface
 
     public function getProviderName(): string;
 }
+

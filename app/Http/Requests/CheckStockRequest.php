@@ -20,3 +20,4 @@ class CheckStockRequest extends FormRequest
         ];
     }
 }
+

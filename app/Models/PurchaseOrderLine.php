@@ -40,3 +40,4 @@ class PurchaseOrderLine extends Model
         return (float) ($this->quantity * $this->unit_cost);
     }
 }
+

@@ -28,3 +28,4 @@ class Warehouse extends Model
             ->withTimestamps();
     }
 }
+

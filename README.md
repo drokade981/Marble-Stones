@@ -3,11 +3,12 @@
 [![Laravel](https://img.shields.io/badge/Laravel-12.x-red.svg)](https://laravel.com)
 [![PHP](https://img.shields.io/badge/PHP-8.3-blue.svg)](https://php.net)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue.svg)](https://www.postgresql.org/)
+[![MySQL](https://img.shields.io/badge/MySQL-8.0-orange.svg)](https://www.mysql.com/)
+[![Google Gemini](https://img.shields.io/badge/AI-Google%20Gemini-4285F4.svg)](https://ai.google.dev/)
 [![Redis](https://img.shields.io/badge/Redis-7-red.svg)](https://redis.io)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED.svg)](https://docker.com)
 
-An enterprise AI assistant designed for a US-based stone and quartz distributor ERP. Staff can query live inventory, track purchase order delays, inspect per-slab landed costs with strict role-based permission checks, and create/confirm draft purchase orders via conversational flow.
+An enterprise AI assistant designed for a US-based stone and quartz distributor ERP. Staff can query live inventory, track purchase order delays, inspect per-slab landed costs with strict role-based permission checks, and create/confirm draft purchase orders via conversational flow powered by **Google Gemini** and backed by **MySQL 8.0**.
 
 ---
 
@@ -17,31 +18,32 @@ An enterprise AI assistant designed for a US-based stone and quartz distributor 
 3. [Architecture & Question Flow](#3-architecture--question-flow)
 4. [Landed Cost Freight Allocation Rationale](#4-landed-cost-freight-allocation-rationale)
 5. [TypeScript AI Agent Microservice](#5-typescript-ai-agent-microservice)
-6. [ERP Integration Guide](#6-erp-integration-guide)
-7. [Estimated AI Costs (per 1,000 Questions)](#7-estimated-ai-costs-per-1000-questions)
-8. [Security & Prompt Injection Protection](#8-security--prompt-injection-protection)
-9. [What We Would Improve With More Time](#9-what-we-would-improve-with-more-time)
-10. [Test Suite Verification](#10-test-suite-verification)
-11. [5–10 Minute Video Walkthrough Outline](#11-510-minute-video-walkthrough-outline)
+6. [Google Gemini Integration](#6-google-gemini-integration)
+7. [ERP Integration Guide](#7-erp-integration-guide)
+8. [Estimated AI Costs with Gemini (per 1,000 Questions)](#8-estimated-ai-costs-with-gemini-per-1000-questions)
+9. [Security & Prompt Injection Protection](#9-security--prompt-injection-protection)
+10. [What We Would Improve With More Time](#10-what-we-would-improve-with-more-time)
+11. [Test Suite Verification](#11-test-suite-verification)
+12. [5–10 Minute Video Walkthrough Outline](#12-510-minute-video-walkthrough-outline)
 
 ---
 
 ## 1. One-Command Quick Start
 
-The entire stack is packaged with Docker Compose. A single command starts PostgreSQL 16, Redis 7, the Laravel 12 API/Web application, background queue worker, and the standalone TypeScript AI Agent.
+The entire stack is packaged with Docker Compose using **MySQL 8.0** and **Google Gemini**:
 
 ### Run with Docker Compose:
 ```bash
 docker-compose up --build
 ```
-*(On first launch, the entrypoint script automatically waits for PostgreSQL, generates the application key, runs all migrations, and seeds the full realistic dataset).*
+*(On first launch, the entrypoint script automatically waits for MySQL, generates the application key, runs all migrations, and seeds the full realistic dataset).*
 
 Once running:
 - **Interactive ERP Assistant Web UI**: [http://localhost:8000](http://localhost:8000)
 - **Laravel ERP REST API**: `http://localhost:8000/api`
 - **TypeScript AI Agent API**: `http://localhost:3001`
-- **PostgreSQL**: `localhost:5432` (db: `laravel_erp`, user: `postgres`, pass: `postgres`)
-- **Redis**: `localhost:6379`
+- **MySQL 8.0**: `localhost:3306` (db: `laravel_erp`, user: `root`, pass: `root_secret`)
+- **Redis 7**: `localhost:6379`
 
 ### Alternative: Running Locally without Docker
 ```bash
@@ -77,7 +79,7 @@ The system seeds two standard accounts with distinct permissions:
 #### 1. Check Stock (Both Roles Allowed)
 > **Staff:** *"How many 3cm Calacatta slabs do we have in Houston?"*  
 > **Assistant:** `"There are 42 slabs of 3cm Calacatta in the Houston warehouse."`  
-> *(Source: `checkStock` tool output from database, not LLM memory)*
+> *(Source: `checkStock` tool output from MySQL, not LLM memory)*
 
 #### 2. Follow-Up Context Memory
 > **Staff:** *"And in Dallas?"*  
@@ -117,25 +119,18 @@ flowchart TD
     Auth --> Request["POST /api/assistant"]
     Request --> Guard["SecurityGuard (Prompt Injection Defense)"]
     Guard --> Conv["ConversationContext (Loads History & Entities)"]
-    Conv --> Agent["AI Decision Engine (Claude / Bedrock / OpenAI / Local)"]
+    Conv --> Agent["Google Gemini Decision Engine (gemini-1.5-flash / fallback)"]
     Agent --> ToolCall["Agent Picks Tool: checkStock / getLandedCost / createDraftPO"]
     ToolCall --> RoleCheck{"In-Tool Role Check<br>(User == Purchasing?)"}
     RoleCheck -- "No (Sales requesting costs)" --> Refusal["Polite Refusal Response<br>'Cost details are only available to Purchasing'"]
     RoleCheck -- "Yes" --> Service["ERP Service Layer<br>(StockService / LandedCostService / PurchaseOrderService)"]
-    Service --> DB[("Database (PostgreSQL / MySQL)")]
+    Service --> DB[("MySQL 8.0 Database")]
     DB --> ToolResult["Tool Result Data (Numbers & Records)"]
     ToolResult --> Synthesis["Synthesize Answer (Strictly Grounded in Tool Data)"]
     Synthesis --> Logger["Audit Logger (assistant_logs)"]
     Refusal --> Logger
     Logger --> Response["JSON Response to User"]
 ```
-
-### Key Principles:
-1. **Tool Calling Only, Never Raw SQL**: The AI engine never generates or executes SQL. It interacts exclusively with structured, strongly typed Laravel service tools (`checkStock`, `searchPurchaseOrders`, `getLandedCost`, `createDraftPurchaseOrder`, `confirmDraftPurchaseOrder`).
-2. **Permissions Inside Tools**: Security is not left to the LLM system prompt. Every tool verifies `$user->isPurchasing()` or `$user->isSales()` directly in PHP.
-3. **Confirm Before Writing**: Draft purchase orders are staged in `draft_purchase_orders` with a unique token. The database `purchase_orders` record is created only after explicit user confirmation ("confirm").
-4. **Contextual Memory**: `ConversationContext` caches the conversation state (subject product, warehouse, active PO, pending draft) for 2 hours in Redis.
-5. **Audit Logging**: Every interaction records user ID, conversation ID, question, tools executed with inputs/outputs, final answer, tokens used, and response latency in milliseconds.
 
 ---
 
@@ -154,21 +149,36 @@ In natural stone and engineered quartz distribution:
 
 ## 5. TypeScript AI Agent Microservice
 
-Per the challenge requirements, a dedicated TypeScript + Node.js agent lives in `ts-agent/`:
+A dedicated TypeScript + Node.js agent lives in `ts-agent/`:
 
 - **Path**: `ts-agent/`
 - **Port**: `3001` (`http://localhost:3001`)
 - **Docker Container**: `slaberp-ts-agent`
 - **Features**:
   - Connects to Laravel ERP API using Sanctum Bearer tokens.
-  - Exposes `POST /chat` with natural language processing and session memory.
-  - Exposes `GET /health` and `GET /tools`.
+  - Native Google Gemini integration (`GEMINI_API_KEY`) with session memory.
+  - Exposes `POST /chat`, `GET /health`, `GET /tools`.
   - Automatically forwards user token to Laravel tool endpoints so Laravel validates identity and role checks.
   - Can be toggled live in the Web UI via the top header badge ("Laravel AI Agent" vs "TS/Node Agent").
 
 ---
 
-## 6. ERP Integration Guide
+## 6. Google Gemini Integration
+
+The assistant uses **Google Gemini** as its primary LLM:
+- **Default Model**: `gemini-1.5-flash` (or `gemini-2.0-flash` / `gemini-1.5-pro`)
+- **Provider Class**: `App\Services\Assistant\Providers\GeminiProvider`
+- **Configuration**:
+  ```dotenv
+  AI_PROVIDER=gemini
+  GEMINI_API_KEY=your_gemini_api_key_here
+  GEMINI_MODEL=gemini-1.5-flash
+  ```
+- **Zero-Key Fallback**: If `GEMINI_API_KEY` is not provided, the assistant automatically and seamlessly falls back to the local deterministic rule engine without throwing errors, making local testing and evaluations 100% friction-free.
+
+---
+
+## 7. ERP Integration Guide
 
 To plug this assistant into an existing enterprise Laravel ERP:
 
@@ -177,18 +187,16 @@ To plug this assistant into an existing enterprise Laravel ERP:
 2. **Register Sanctum Routes**:
    Include the `api/assistant` and `api/tools/*` route group in `routes/api.php`.
 3. **Map Existing Models**:
-   Point `Product`, `Warehouse`, `Stock`, `Supplier`, and `PurchaseOrder` to your existing ERP tables using Eloquent `$table` and foreign key definitions.
+   Point `Product`, `Warehouse`, `Stock`, `Supplier`, and `PurchaseOrder` to your existing MySQL tables.
 4. **Role Middleware Integration**:
-   Map the assistant's `$user->isPurchasing()` and `$user->isSales()` methods to your ERP's existing permission system (e.g. Spatie Laravel-Permission: `$user->hasRole('purchasing')`).
-5. **Front-End Widget**:
-   Embed the Blade chat component into your ERP navigation bar or sidebar for immediate access across ERP screens.
+   Map the assistant's `$user->isPurchasing()` and `$user->isSales()` methods to your ERP's existing permission system.
 
 ---
 
-## 7. Estimated AI Costs (per 1,000 Questions)
+## 8. Estimated AI Costs with Gemini (per 1,000 Questions)
 
 ### Assumptions:
-- Average prompt: 150 input tokens (system instructions + conversation history + user query + tool schemas).
+- Average prompt: 150 input tokens (system instructions + history + user query + tool schemas).
 - Average tool execution: 200 input tokens (ERP JSON tool output fed back to LLM).
 - Average answer: 80 output tokens.
 - Total per question: **350 input tokens** + **80 output tokens**.
@@ -198,33 +206,32 @@ To plug this assistant into an existing enterprise Laravel ERP:
 
 | Provider / Model | Input Cost / 1M | Output Cost / 1M | Cost per 1,000 Questions | Notes |
 | :--- | :--- | :--- | :--- | :--- |
-| **Claude 3.5 Haiku (Bedrock/Anthropic)** | \$0.80 | \$4.00 | **\$0.60** | **Recommended for production**: Ultra-fast, highly accurate tool calling. |
-| **Claude 3.5 Sonnet (Bedrock/Anthropic)** | \$3.00 | \$15.00 | **\$2.25** | Best for complex multi-step purchasing logic. |
-| **GPT-4o-mini (OpenAI)** | \$0.15 | \$0.60 | **\$0.10** | Lowest cost commercial model. |
-| **Built-in Local Heuristic Provider** | \$0.00 | \$0.00 | **\$0.00** | Zero API keys required; 100% free offline execution. |
+| **Google Gemini 1.5 Flash** | **\$0.075** | **\$0.30** | **~\$0.05 (5 cents)** | **Primary & Recommended**: Ultra-fast, generous rate limits, and lowest commercial cost. |
+| **Google Gemini 1.5 Pro** | \$1.25 | \$5.00 | **\$0.84** | Advanced reasoning for complex analytics. |
+| **Claude 3.5 Haiku** | \$0.80 | \$4.00 | **\$0.60** | Fast alternative. |
+| **Built-in Local Provider** | \$0.00 | \$0.00 | **\$0.00** | Free offline fallback when key is not configured. |
 
 ---
 
-## 8. Security & Prompt Injection Protection
+## 9. Security & Prompt Injection Protection
 
-The assistant implements defense-in-depth:
 1. **Deterministic Role Checks in Code**: Permissions are hard-coded in PHP service methods (`$user->isSales()`). The LLM prompt cannot bypass them because tools reject unauthorized calls before reading sensitive data.
-2. **SecurityGuard Regex Filter**: Intercepts jailbreak attempts (`"ignore all previous rules"`, `"act as admin"`, `"union select"`, `"reveal system prompt"`) and returns an immediate safe refusal without invoking LLM tokens.
-3. **Sanitized ERP Output**: Encrypted database attributes (like supplier bank details) are never loaded into arrays sent to the Sales user.
+2. **SecurityGuard Regex Filter**: Intercepts jailbreak attempts (`"ignore all previous rules"`, `"act as admin"`, `"union select"`, `"reveal system prompt"`) and returns an immediate safe refusal.
+3. **Encrypted Supplier Bank Details**: Stored encrypted in MySQL (`'bank_details' => 'encrypted'`).
 4. **Prepared Queries & Eloquent**: Parameterized query bindings prevent SQL injection.
 
 ---
 
-## 9. What We Would Improve With More Time
+## 10. What We Would Improve With More Time
 
 1. **Streaming Responses (SSE)**: Implement Server-Sent Events (`text/event-stream`) in `POST /api/assistant` for real-time word-by-word token streaming in the chat UI.
-2. **Asynchronous Queue Jobs for Complex Analytics**: Dispatch heavy multi-warehouse inventory forecasting or supplier lead-time simulations to Laravel Redis queues with WebSocket notification via Laravel Reverb.
-3. **Semantic Vector Search (pgvector)**: Add PostgreSQL `pgvector` embeddings on stone color patterns and vein descriptions (e.g., "warm marble with gold spider veins") for fuzzy visual similarity matching.
-4. **Multi-Item Purchase Order Draft Editing**: Allow staff to conversational modify existing drafts (e.g. *"Change the quantity of Carrara to 30 slabs"*) prior to final confirmation.
+2. **Asynchronous Queue Jobs for Complex Analytics**: Dispatch heavy multi-warehouse inventory forecasting or supplier lead-time simulations to Laravel Redis queues.
+3. **Semantic Vector Search**: Integrate MySQL vector search or pgvector for stone color pattern embeddings (e.g., "warm marble with gold spider veins").
+4. **Multi-Item Draft Editing**: Allow staff to modify existing drafts conversationally prior to final confirmation.
 
 ---
 
-## 10. Test Suite Verification
+## 11. Test Suite Verification
 
 Run the automated PHPUnit test suite:
 ```bash
@@ -235,37 +242,26 @@ Results:
 ```text
 OK (15 tests, 61 assertions)
 ```
-Tests verify:
-- Stock checking in Houston (42 slabs) and Dallas (18 slabs) for 3cm Calacatta.
-- Conversation follow-up context retention ("And in Dallas?").
-- Polite refusal for Sales asking landed costs.
-- Complete landed cost breakdown for Purchasing on PO-1023.
-- Draft PO creation and confirmation workflow.
-- Delayed PO queries for Supplier X.
-- Prompt injection blocking.
 
 ---
 
-## 11. 5–10 Minute Video Walkthrough Outline
+## 12. 5–10 Minute Video Walkthrough Outline
 
-Here is the recommended script for your submission recording:
-
-1. **Introduction & Architecture Overview (1.5 min)**:
+1. **Introduction & Stack Overview (1.5 min)**:
    - Introduce the ERP assistant built for natural stone & quartz distribution.
-   - Show `docker-compose.yml` and the 1-command startup.
-   - Explain the 2 roles (Sales vs Purchasing) and the separation of concerns between tools and AI models.
+   - Show `docker-compose.yml` with **MySQL 8.0** and **Google Gemini 1.5 Flash**.
+   - Explain the 1-command startup and the two roles (Sales vs Purchasing).
 2. **Sales Role Demonstration (2 min)**:
    - Log in as Sarah Jenkins (Sales).
-   - Ask: *"How many 3cm Calacatta slabs do we have in Houston?"* -> Highlight the 42 slabs answer coming directly from `checkStock`.
+   - Ask: *"How many 3cm Calacatta slabs do we have in Houston?"* -> Show 42 slabs answer from MySQL `checkStock` tool.
    - Ask follow-up: *"And in Dallas?"* -> Highlight context retention (18 slabs).
-   - Ask: *"What is the landed cost per slab on PO-1023?"* -> Show the in-tool role check triggering the polite refusal: `"Cost details are only available to the Purchasing team."`
+   - Ask: *"What is the landed cost per slab on PO-1023?"* -> Show the in-tool role check triggering polite refusal.
 3. **Purchasing Role & Confirm-Before-Write Flow (2.5 min)**:
    - Switch role to Peter Vance (Purchasing).
    - Re-ask: *"What is the landed cost per slab on PO-1023?"* -> Show full landed cost breakdown (\$150 and \$115 per slab) with quantity-based freight allocation explanation.
-   - Ask: *"Create a draft PO for 20 slabs of 2cm Carrara from Supplier Y."* -> Show the assistant preparing the draft and asking for confirmation without writing to the database.
-   - Reply: *"confirm"* -> Show PO-1016 successfully created in PostgreSQL.
+   - Ask: *"Create a draft PO for 20 slabs of 2cm Carrara from Supplier Y."* -> Show draft preparation without saving.
+   - Reply: *"confirm"* -> Show PO-1016 successfully created and committed to MySQL.
    - Ask: *"Which purchase orders from Supplier X are delayed?"* -> Show delayed POs listed.
 4. **Codebase Walkthrough & TypeScript Agent (2 min)**:
-   - Walk through `LandedCostService.php`, `ToolManager.php`, and `AssistantService.php`.
-   - Show `ts-agent/` running in parallel and demonstrate the seamless toggle between Laravel and TypeScript agents.
+   - Walk through `GeminiProvider.php`, `LandedCostService.php`, `ToolManager.php`, and `ts-agent/src/agent.ts`.
    - Conclude with the 15 passing PHPUnit tests and security protections.

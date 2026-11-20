@@ -119,3 +119,4 @@ class StockService
         return trim($cleaned);
     }
 }
+

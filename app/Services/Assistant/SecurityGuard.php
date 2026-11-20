@@ -35,3 +35,4 @@ class SecurityGuard
         return trim($clean);
     }
 }
+

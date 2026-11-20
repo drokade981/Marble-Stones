@@ -1,23 +1,21 @@
 FROM php:8.3-cli-alpine
 
-# Install system dependencies & PostgreSQL / MySQL client libraries
+# Install system dependencies & MySQL client
 RUN apk add --no-cache \
     curl \
     git \
     unzip \
     libzip-dev \
-    libpq-dev \
-    postgresql-client \
+    mariadb-client \
     mysql-client \
     bash \
     icu-dev \
     oniguruma-dev \
     linux-headers
 
-# Install PHP extensions
+# Install PHP extensions for MySQL, Redis and background jobs
 RUN docker-php-ext-install -j$(nproc) \
     pdo \
-    pdo_pgsql \
     pdo_mysql \
     bcmath \
     zip \

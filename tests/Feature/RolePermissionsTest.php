@@ -122,3 +122,4 @@ class RolePermissionsTest extends TestCase
         $this->assertArrayHasKey('supplier_bank_details', $order);
     }
 }
+

@@ -290,3 +290,4 @@ class LocalHeuristicProvider implements AiProviderInterface
         }
     }
 }
+

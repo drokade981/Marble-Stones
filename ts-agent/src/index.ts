@@ -82,3 +82,4 @@ app.listen(port, () => {
   console.log(`TypeScript AI Agent listening on port ${port}`);
   console.log(`Connected to Laravel ERP at: ${laravelUrl}`);
 });
+

@@ -26,6 +26,10 @@
                 <div class="flex items-center space-x-2">
                     <h1 class="text-base font-bold text-slate-100 tracking-tight">SlabERP Assistant</h1>
                     <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20">US Natural Stone & Quartz</span>
+                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 flex items-center space-x-1">
+                        <svg class="w-3 h-3 text-blue-400" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L14.4 7.2L20 8.4L16 12.8L17.2 18.4L12 15.6L6.8 18.4L8 12.8L4 8.4L9.6 7.2L12 2Z"/></svg>
+                        <span>Google Gemini</span>
+                    </span>
                 </div>
                 <p class="text-xs text-slate-400">Inventory & Purchasing AI Copilot</p>
             </div>
@@ -112,7 +116,7 @@
                         <span>Full Access: Landed Cost & PO Creation Enabled</span>
                     </span>
                     <span class="text-slate-500">|</span>
-                    <span class="font-mono text-slate-400" x-text="'Agent: ' + (agentType === 'laravel' ? 'Laravel Internal Engine' : 'TypeScript Node Microservice (3001)')"></span>
+                    <span class="font-mono text-slate-400" x-text="'Model: Gemini 1.5 Flash | Agent: ' + (agentType === 'laravel' ? 'Laravel Engine' : 'TypeScript Agent (3001)')"></span>
                 </div>
             </div>
 

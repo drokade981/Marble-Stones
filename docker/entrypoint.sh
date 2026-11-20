@@ -13,14 +13,21 @@ if ! grep -q "APP_KEY=base64" /var/www/html/.env; then
     php artisan key:generate --force
 fi
 
-# Wait for PostgreSQL database if DB_CONNECTION is pgsql
-if [ "$DB_CONNECTION" = "pgsql" ]; then
-    echo "Waiting for PostgreSQL at ${DB_HOST:-database}:${DB_PORT:-5432}..."
-    until pg_isready -h "${DB_HOST:-database}" -p "${DB_PORT:-5432}" -U "${DB_USERNAME:-postgres}"; do
-        echo "Database is unavailable - sleeping..."
+# Wait for MySQL database if DB_CONNECTION is mysql
+if [ "$DB_CONNECTION" = "mysql" ]; then
+    echo "Waiting for MySQL database at ${DB_HOST:-database}:${DB_PORT:-3306}..."
+    until php -r "
+        try {
+            new PDO('mysql:host=' . getenv('DB_HOST') . ';port=' . (getenv('DB_PORT') ?: '3306') . ';dbname=' . getenv('DB_DATABASE'), getenv('DB_USERNAME'), getenv('DB_PASSWORD'));
+            exit(0);
+        } catch (Throwable \$e) {
+            exit(1);
+        }
+    " 2>/dev/null; do
+        echo "MySQL is unavailable - sleeping 2 seconds..."
         sleep 2
     done
-    echo "PostgreSQL is ready!"
+    echo "MySQL database is ready!"
 fi
 
 # Run migrations and seed on app container startup
