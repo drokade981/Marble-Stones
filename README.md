@@ -166,13 +166,13 @@ A dedicated TypeScript + Node.js agent lives in `ts-agent/`:
 ## 6. Google Gemini Integration
 
 The assistant uses **Google Gemini** as its primary LLM:
-- **Default Model**: `gemini-1.5-flash` (or `gemini-2.0-flash` / `gemini-1.5-pro`)
+- **Default Model**: `gemini-3.5-flash` (or `gemini-2.0-flash` / `gemini-1.5-pro`)
 - **Provider Class**: `App\Services\Assistant\Providers\GeminiProvider`
 - **Configuration**:
   ```dotenv
   AI_PROVIDER=gemini
   GEMINI_API_KEY=your_gemini_api_key_here
-  GEMINI_MODEL=gemini-1.5-flash
+  GEMINI_MODEL=gemini-3.5-flash
   ```
 - **Zero-Key Fallback**: If `GEMINI_API_KEY` is not provided, the assistant automatically and seamlessly falls back to the local deterministic rule engine without throwing errors, making local testing and evaluations 100% friction-free.
 

@@ -430,6 +430,11 @@
                     const text = this.userInput.trim();
                     if (!text || this.isWaiting) return;
 
+                    // Ensure valid authentication token before sending message
+                    if (!this.authToken) {
+                        await this.switchRole(this.currentUser?.role || 'sales');
+                    }
+
                     this.messages.push({ role: 'user', text, tools: [] });
                     this.userInput = '';
                     this.isWaiting = true;
