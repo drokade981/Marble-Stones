@@ -121,6 +121,7 @@ services:
       dockerfile: Dockerfile
     container_name: slaberp-ts-agent
     restart: unless-stopped
+    command: ["npm", "run", "dev"]
     ports:
       - "3001:3001"
     environment:
@@ -130,8 +131,12 @@ services:
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-1.5-flash}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "500"
     volumes:
-      - ./ts-agent/dist:/app/dist
+      - ./ts-agent/src:/app/src
+      - ./ts-agent/package.json:/app/package.json
+      - ./ts-agent/tsconfig.json:/app/tsconfig.json
     depends_on:
       - app
 

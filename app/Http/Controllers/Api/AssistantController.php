@@ -92,7 +92,7 @@ class AssistantController extends Controller
         }
 
         return response()->json([
-            'error' => 'Unable to connect to TypeScript Agent service at ' . $configuredUrl,
+            'error' => 'Unable to connect to AI Agent service at ' . $configuredUrl,
             'message' => $lastException?->getMessage() ?? 'Connection refused',
         ], 502);
     }

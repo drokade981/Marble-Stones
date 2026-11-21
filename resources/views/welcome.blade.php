@@ -41,12 +41,12 @@
                 <button @click="agentType = 'laravel'"
                         :class="agentType === 'laravel' ? 'bg-amber-500 text-slate-950 font-semibold shadow' : 'text-slate-400 hover:text-slate-200'"
                         class="px-2.5 py-1 rounded transition">
-                    Laravel AI Agent
+                    Laravel Agent
                 </button>
-                <button @click="agentType = 'typescript'"
-                        :class="agentType === 'typescript' ? 'bg-indigo-500 text-white font-semibold shadow' : 'text-slate-400 hover:text-slate-200'"
+                <button @click="agentType = 'ai-agent'"
+                        :class="agentType === 'ai-agent' ? 'bg-indigo-500 text-white font-semibold shadow' : 'text-slate-400 hover:text-slate-200'"
                         class="px-2.5 py-1 rounded transition flex items-center space-x-1">
-                    <span>TS/Node Agent</span>
+                    <span>AI Agent</span>
                     <span class="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
                 </button>
             </div>
@@ -116,7 +116,7 @@
                         <span>Full Access: Landed Cost & PO Creation Enabled</span>
                     </span>
                     <span class="text-slate-500">|</span>
-                    <span class="font-mono text-slate-400" x-text="'Model: Gemini 1.5 Flash | Agent: ' + (agentType === 'laravel' ? 'Laravel Engine' : 'TypeScript Agent (3001)')"></span>
+                    <span class="font-mono text-slate-400" x-text="'Model: Gemini 1.5 Flash | Agent: ' + (agentType === 'laravel' ? 'Laravel Engine' : 'AI Agent (3001)')"></span>
                 </div>
             </div>
 
@@ -377,7 +377,7 @@
     <script>
         function erpApp() {
             return {
-                agentType: 'laravel', // 'laravel' or 'typescript'
+                agentType: 'ai-agent', // 'laravel' or 'ai-agent'
                 activeTab: 'chat',
                 currentUser: {
                     name: 'Sarah Jenkins (Sales)',
@@ -443,7 +443,7 @@
                             'Authorization': `Bearer ${this.authToken}`
                         };
 
-                        if (this.agentType === 'typescript') {
+                        if (this.agentType === 'ai-agent') {
                             endpoint = '/api/ts-agent/chat';
                         }
 
