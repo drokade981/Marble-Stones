@@ -58,7 +58,7 @@ app.post('/chat', async (req: Request, res: Response) => {
           user = auth.user;
         } catch (authErr: any) {
           return res.status(401).json({
-            error: 'Could not authenticate with Laravel ERP. Ensure credentials or Bearer token is provided.',
+            error: 'Could not authenticate with the ERP. Ensure credentials or Bearer token is provided.',
             details: authErr.message,
           });
         }

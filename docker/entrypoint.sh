@@ -15,13 +15,10 @@ sed -i 's|TS_AGENT_URL=http://localhost:3001|TS_AGENT_URL=http://ts-agent:3001|g
 # Enable multiple workers for PHP built-in server to handle concurrent requests without deadlocks
 export PHP_CLI_SERVER_WORKERS=4
 
-# Ensure composer dependencies and autoloader are complete
-if [ ! -f /var/www/html/vendor/autoload.php ] || [ ! -d /var/www/html/vendor/predis/predis ]; then
+# Ensure composer dependencies are present
+if [ ! -f /var/www/html/vendor/autoload.php ]; then
     echo "Synchronizing composer vendor packages..."
     composer install --no-interaction --prefer-dist --optimize-autoloader
-else
-    # Refresh autoload classmap to ensure newly added packages are registered
-    composer dump-autoload --optimize --quiet || true
 fi
 
 # Generate APP_KEY if empty
