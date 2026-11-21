@@ -41,31 +41,60 @@ class AssistantController extends Controller
         $message = $request->validated('message');
         $conversationId = $request->validated('conversation_id');
 
-        $agentUrl = env('TS_AGENT_URL', 'http://localhost:3001');
+        // Support container-to-container (http://ts-agent:3001) as well as host (http://localhost:3001)
+        $configuredUrl = rtrim(env('TS_AGENT_URL', 'http://ts-agent:3001'), '/');
+        $candidateUrls = array_values(array_unique([
+            $configuredUrl,
+            'http://ts-agent:3001',
+            'http://localhost:3001',
+            'http://127.0.0.1:3001',
+        ]));
 
-        try {
-            $response = \Illuminate\Support\Facades\Http::timeout(15)
-                ->withToken($token)
-                ->post("{$agentUrl}/chat", [
-                    'message' => $message,
-                    'conversation_id' => $conversationId,
-                    'role' => $user->role,
-                ]);
+        $lastException = null;
+        $response = null;
 
-            if ($response->successful()) {
-                return response()->json($response->json());
+        foreach ($candidateUrls as $url) {
+            try {
+                $resp = \Illuminate\Support\Facades\Http::timeout(35)
+                    ->withToken($token)
+                    ->post("{$url}/chat", [
+                        'message' => $message,
+                        'conversation_id' => $conversationId,
+                        'role' => $user->role,
+                        'token' => $token,
+                        'user' => [
+                            'id' => $user->id,
+                            'name' => $user->name,
+                            'email' => $user->email,
+                            'role' => $user->role,
+                        ],
+                    ]);
+
+                if ($resp->successful() || $resp->status() < 500) {
+                    $response = $resp;
+                    break;
+                }
+            } catch (\Throwable $e) {
+                $lastException = $e;
+                continue;
             }
+        }
 
+        if ($response && $response->successful()) {
+            return response()->json($response->json());
+        }
+
+        if ($response) {
             return response()->json([
                 'error' => 'TS Agent returned error status: ' . $response->status(),
                 'details' => $response->body(),
             ], $response->status());
-        } catch (\Throwable $e) {
-            return response()->json([
-                'error' => 'Unable to connect to TypeScript Agent service at ' . $agentUrl,
-                'message' => $e->getMessage(),
-            ], 502);
         }
+
+        return response()->json([
+            'error' => 'Unable to connect to TypeScript Agent service at ' . $configuredUrl,
+            'message' => $lastException?->getMessage() ?? 'Connection refused',
+        ], 502);
     }
 
     /**

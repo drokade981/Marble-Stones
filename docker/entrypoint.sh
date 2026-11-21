@@ -7,6 +7,14 @@ if [ ! -f /var/www/html/.env ]; then
     cp /var/www/html/.env.example /var/www/html/.env
 fi
 
+# Ensure Docker service hostnames are set in .env
+sed -i 's/REDIS_HOST=127.0.0.1/REDIS_HOST=redis/g' /var/www/html/.env 2>/dev/null || true
+sed -i 's/DB_HOST=127.0.0.1/DB_HOST=database/g' /var/www/html/.env 2>/dev/null || true
+sed -i 's|TS_AGENT_URL=http://localhost:3001|TS_AGENT_URL=http://ts-agent:3001|g' /var/www/html/.env 2>/dev/null || true
+
+# Enable multiple workers for PHP built-in server to handle concurrent requests without deadlocks
+export PHP_CLI_SERVER_WORKERS=4
+
 # Ensure composer dependencies and autoloader are complete
 if [ ! -f /var/www/html/vendor/autoload.php ] || [ ! -d /var/www/html/vendor/predis/predis ]; then
     echo "Synchronizing composer vendor packages..."

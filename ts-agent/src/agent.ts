@@ -133,18 +133,26 @@ export class AssistantAgent {
       // 6. Stock check ("How many 3cm Calacatta slabs do we have in Houston?")
       else {
         toolName = 'checkStock';
+        const cleanMsg = message.replace(/[?.,!]/g, ' ');
         let warehouse: string | undefined = undefined;
-        const wm = message.match(/\b(in|at)\s+(houston|dallas|chicago)\b/i);
+        const wm = cleanMsg.match(/\b(in|at)\s+(houston|dallas|chicago)\b/i);
         if (wm) {
           warehouse = wm[2].charAt(0).toUpperCase() + wm[2].slice(1).toLowerCase();
         }
 
-        let product = message.replace(/(how many|slabs?|do we have|in stock|stock|in\s+(houston|dallas|chicago))/gi, '').trim();
+        let product = cleanMsg.replace(/(how many|slabs?|do we have|in stock|stock|available|in\s+(houston|dallas|chicago))/gi, '').trim();
+        product = product.replace(/\s+/g, ' ').trim();
         if (!product || product.length < 3) {
-          product = session.lastProduct || '3cm Calacatta';
+          product = session.lastProduct || '3cm Calacatta Gold';
         }
 
-        toolParams = { product, warehouse };
+        let thickness: number | undefined = undefined;
+        const tm = product.match(/\b([23])\s*cm\b/i);
+        if (tm) {
+          thickness = parseInt(tm[1], 10);
+        }
+
+        toolParams = { product, warehouse, thickness_cm: thickness };
       }
     }
 

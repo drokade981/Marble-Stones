@@ -32,7 +32,7 @@ export class ErpClient {
     return axios.create({
       baseURL: this.baseUrl,
       headers,
-      timeout: 10000,
+      timeout: 30000,
     });
   }
 

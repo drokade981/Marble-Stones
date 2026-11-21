@@ -112,11 +112,12 @@ class StockService
     {
         if (empty($query)) return '';
 
-        // Strip "3cm", "2cm", "slabs", "slab" for clean product name searching
-        $cleaned = preg_replace('/\b\d+(\.\d+)?\s*cm\b/i', '', $query);
-        $cleaned = preg_replace('/\b(slabs?|in stock|stock|do we have|how many)\b/i', '', $cleaned);
+        // Strip trailing punctuation and common words for clean product name searching
+        $cleaned = preg_replace('/[?.,!]/', ' ', $query);
+        $cleaned = preg_replace('/\b\d+(\.\d+)?\s*cm\b/i', '', $cleaned);
+        $cleaned = preg_replace('/\b(slabs?|in stock|stock|do we have|how many|available)\b/i', '', $cleaned);
 
-        return trim($cleaned);
+        return trim(preg_replace('/\s+/', ' ', $cleaned));
     }
 }
 
