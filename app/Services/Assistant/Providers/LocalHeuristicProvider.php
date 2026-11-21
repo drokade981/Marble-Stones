@@ -17,6 +17,14 @@ class LocalHeuristicProvider implements AiProviderInterface
     {
         $lower = strtolower(trim($message));
 
+        // 0. Friendly greeting or help
+        if (preg_match('/^(hi|hello|hey|help|howdy|good\s+(morning|afternoon|evening))\b/i', $lower) && str_word_count($lower) <= 3) {
+            return [
+                'type' => 'direct_response',
+                'text' => "Hello {$user->name}! I am your Stone & Quartz ERP AI Assistant. How can I assist you with inventory stock, purchase orders, or landed costs today?",
+            ];
+        }
+
         // 1. Confirm draft PO action
         if (preg_match('/^(confirm|yes\s*,?\s*confirm|save\s+it|please\s+confirm)\b/i', $lower)) {
             return [

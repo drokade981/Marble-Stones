@@ -75,6 +75,19 @@ export class AssistantAgent {
     }
 
     if (!toolName) {
+      // 0. Friendly Greeting or Help
+      if (/^(hi|hello|hey|help|howdy|good\s+(morning|afternoon|evening))\b/i.test(lower) && lower.split(/\s+/).length <= 4) {
+        return {
+          conversation_id: conversationId,
+          role: user.role,
+          user_name: user.name,
+          reply: `Hello ${user.name}! I am your Stone & Quartz ERP AI Assistant. How can I assist you with inventory stock, purchase orders, or landed costs today?`,
+          tools_called: [],
+          tokens_used: 25,
+          response_time_ms: Date.now() - startTime,
+        };
+      }
+
       // 1. Confirm draft PO
       if (/^(confirm|yes\s*,?\s*confirm|save\s+it)\b/i.test(lower)) {
         toolName = 'confirmDraftPurchaseOrder';
