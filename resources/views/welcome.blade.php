@@ -116,7 +116,7 @@
                         <span>Full Access: Landed Cost & PO Creation Enabled</span>
                     </span>
                     <span class="text-slate-500">|</span>
-                    <span class="font-mono text-slate-400" x-text="'Model: Gemini 1.5 Flash | Agent: ' + (agentType === 'laravel' ? 'Laravel Engine' : 'AI Agent (3001)')"></span>
+                    <span class="font-mono text-slate-400" x-text="'Model: Google Gemini | Agent: ' + (agentType === 'laravel' ? 'Laravel Engine' : 'AI Agent (3001)')"></span>
                 </div>
             </div>
 

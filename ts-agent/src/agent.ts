@@ -13,6 +13,56 @@ interface SessionState {
   history: Array<{ role: 'user' | 'assistant'; text: string }>;
 }
 
+function extractCleanText(content: any): string {
+  if (typeof content === 'string') {
+    return content.trim();
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((part: any) => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part.text === 'string') return part.text;
+        return '';
+      })
+      .filter(Boolean)
+      .join('')
+      .trim();
+  }
+  if (content && typeof content.text === 'string') {
+    return content.text.trim();
+  }
+  return '';
+}
+
+function isRelevantToDatabase(message: string, session: SessionState): boolean {
+  const lower = message.trim().toLowerCase();
+
+  // Active draft PO awaiting confirmation
+  if (session.pendingDraftToken && /^(confirm|yes|save|cancel|no)\b/i.test(lower)) {
+    return true;
+  }
+
+  // Contextual follow-up warehouse inquiry
+  if (/^(and|what\s+about|how\s+about)\s+(in\s+)?(houston|dallas|chicago)\??$/i.test(lower)) {
+    return true;
+  }
+
+  // Stone, quartz, inventory, warehouse, purchase orders, costs keywords
+  const erpPattern = /\b(slab|slabs|stone|quartz|marble|granite|quartzite|porcelain|calacatta|carrara|marquina|statuario|bianco|taj\s+mahal|thickness|2cm|3cm|sqft|inventory|stock|warehouse|warehouses|houston|dallas|chicago|supplier|suppliers|purchase\s+order|purchase\s+orders|po[- ]?\d+|draft\s+po|delayed|late|overdue|eta|freight|landed\s+cost|unit\s+cost|cost\s+per\s+slab|on\s+hand|available)\b/i;
+  if (erpPattern.test(lower)) {
+    return true;
+  }
+
+  // Polite greetings and questions about the assistant's capabilities
+  const greetingOrHelpPattern = /^(hi|hello|hey|help|howdy|greetings|good\s+(morning|afternoon|evening))\b/i;
+  const capabilityPattern = /\b(what\s+can\s+you\s+do|who\s+are\s+you|what\s+do\s+you\s+do|help\s+me)\b/i;
+  if (greetingOrHelpPattern.test(lower) || capabilityPattern.test(lower)) {
+    return true;
+  }
+
+  return false;
+}
+
 export class AssistantAgent {
   private sessions: Map<string, SessionState> = new Map();
   private toolExecutor: ToolExecutor;
@@ -182,18 +232,33 @@ export class AssistantAgent {
     if (this.llm) {
       try {
         const systemPrompt = `You are the AI Assistant for a US stone and quartz distributor ERP.
-Current logged-in staff: ${user.name} (Role: ${user.role}).
-Core Rules:
-1. Always invoke tools to retrieve real ERP data for stock, purchase orders, or landed costs. Never invent numbers, dates, or prices.
-2. Authorization bounds:
-   - Sales staff are strictly forbidden from viewing landed costs, unit costs, or freight details. If they ask about costs or freight, politely refuse and state that cost details are restricted to the Purchasing team.
-   - Purchasing staff can view all costs, freight, and manage purchase orders.
-3. Confirm-Before-Write Draft PO Workflow:
-   - When asked to create a purchase order, always prepare it as a draft and prompt the user to confirm before saving.
-   - When the user confirms (e.g. "confirm", "yes", "save it"), invoke confirm_draft_purchase_order.
-4. Conversational inquiries & greetings:
-   - If the user sends a greeting (hi, hello, etc.), asks who you are, or asks general questions not requiring ERP data, converse naturally and helpfully without invoking tools.
-   - Keep answers professional, concise, and clear.`;
+Current logged-in staff member: ${user.name} (Role: ${user.role}).
+
+CRITICAL INSTRUCTIONS ON DATABASE SCOPE:
+1. ONLY DATA AVAILABLE IN DATABASE:
+   - You ONLY have access to our stone and quartz ERP database: products (slabs, materials like marble/quartz/granite, thicknesses 2cm/3cm), stock in warehouses (Houston, Dallas, Chicago), suppliers, purchase orders, and landed costs.
+   - You must retrieve all facts, quantities, dates, and costs from live ERP tools. Never make up or guess any numbers, dates, or prices.
+   - If a product or record is not found in the database, explicitly state that no matching records exist in the database.
+
+2. IRRELEVANT / OUT-OF-DATABASE QUESTION DENIAL (MANDATORY):
+   - If the user asks ANY question that is NOT relevant to our stone & quartz ERP database (such as world capitals, geography like "what is capital of india", history, trivia, general knowledge, coding, weather, math, entertainment, sports, politics), YOU MUST DENY THE ANSWER in simple language.
+   - Reply strictly with this simple denied answer:
+   "I don't have proper data about it. I can only answer about inventory and purchasing."
+   - Do NOT answer the irrelevant question even partially. Never include outside world facts or trivia in your answer.
+
+3. CONVERSATIONAL GREETINGS & CAPABILITIES:
+   - For polite greetings (hi, hello, hey, good morning, etc.) or questions about what you do, respond politely and concisely in simple language as the Stone & Quartz ERP AI Assistant. Explain that you can answer questions about inventory slab stock across warehouses, purchase order statuses, and landed costs. Do not deny polite greetings.
+
+4. ROLE-BASED ACCESS CONTROL:
+   - Sales role: Allowed to check stock, view product details, and check purchase order status. Strictly forbidden from viewing landed costs, unit costs, freight costs, or supplier bank details. If Sales asks for landed cost or freight, politely refuse: "Cost details are only available to the Purchasing team."
+   - Purchasing role: Full access to stock, purchase orders, landed costs, freight, and creating draft purchase orders.
+
+5. CONFIRM-BEFORE-WRITE DRAFT PO WORKFLOW:
+   - When asked to create a purchase order, call create_draft_purchase_order to prepare the draft. Present the draft details (supplier, items, quantity) and ask the user to reply "confirm" to save it.
+   - When the user confirms (e.g. "confirm", "yes", "save it"), call confirm_draft_purchase_order to persist it to the database.
+
+6. CONVERSATIONAL CONTEXT:
+   - Remember the conversation context for follow-up questions (e.g. "How many 3cm Calacatta slabs do we have in Houston?" followed by "And in Dallas?").`;
 
         const llmWithTools = this.llm.bindTools(tools);
 
@@ -229,9 +294,14 @@ Core Rules:
           }
 
           const followUp = await this.llm.invoke([...messages, aiResponse, ...toolMessages]);
-          finalReply = typeof followUp.content === 'string' ? followUp.content : JSON.stringify(followUp.content);
+          finalReply = extractCleanText(followUp.content);
         } else {
-          finalReply = typeof aiResponse.content === 'string' ? aiResponse.content : JSON.stringify(aiResponse.content);
+          finalReply = extractCleanText(aiResponse.content);
+        }
+
+        // Domain guardrail: if no tool was called and question is not relevant to DB or greetings, deny in simple language
+        if (toolsCalled.length === 0 && !isRelevantToDatabase(message, session)) {
+          finalReply = "I don't have proper data about it. I can only answer about inventory and purchasing.";
         }
 
         session.history.push({ role: 'user', text: message });
@@ -338,13 +408,25 @@ Core Rules:
     }
 
     if (!toolName) {
+      if (/^(hi|hello|hey|help|howdy|good\s+(morning|afternoon|evening))\b/i.test(lower)) {
+        return {
+          conversation_id: conversationId,
+          role: user.role,
+          user_name: user.name,
+          reply: `Hello ${user.name}! I am your Stone & Quartz ERP AI Assistant. How can I assist you with inventory stock, purchase orders, or landed costs today?`,
+          tools_called: [],
+          tokens_used: 20,
+          response_time_ms: Date.now() - startTime,
+        };
+      }
+
       return {
         conversation_id: conversationId,
         role: user.role,
         user_name: user.name,
-        reply: `Hello ${user.name}! I am your Stone & Quartz ERP AI Assistant. How can I assist you with inventory stock, purchase orders, or landed costs today?`,
+        reply: "I don't have proper data about it. I can only answer about inventory and purchasing.",
         tools_called: [],
-        tokens_used: 20,
+        tokens_used: 15,
         response_time_ms: Date.now() - startTime,
       };
     }

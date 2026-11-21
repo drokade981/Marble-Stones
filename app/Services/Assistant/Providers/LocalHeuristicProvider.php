@@ -147,13 +147,21 @@ class LocalHeuristicProvider implements AiProviderInterface
             ];
         }
 
-        // Fallback default stock check
+        // If the query mentions stone, slabs, or materials, check stock
+        if (preg_match('/\b(calacatta|carrara|marble|quartz|granite|quartzite|porcelain|statuario|marquina|slab|slabs)\b/i', $lower)) {
+            return [
+                'type' => 'tool_call',
+                'tool' => 'checkStock',
+                'parameters' => [
+                    'product' => $message,
+                ],
+            ];
+        }
+
+        // Out-of-database / irrelevant question denial in simple language
         return [
-            'type' => 'tool_call',
-            'tool' => 'checkStock',
-            'parameters' => [
-                'product' => $message,
-            ],
+            'type' => 'direct_response',
+            'text' => "I don't have proper data about it. I can only answer about inventory and purchasing.",
         ];
     }
 

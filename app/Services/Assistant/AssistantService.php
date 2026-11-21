@@ -24,7 +24,7 @@ class AssistantService
      */
     public function resolveProvider(): AiProviderInterface
     {
-        $provider = env('AI_PROVIDER', 'gemini');
+        $provider = config('services.ai.provider', env('AI_PROVIDER', 'gemini'));
 
         return match (strtolower($provider)) {
             'gemini', 'google'               => new GeminiProvider(),
