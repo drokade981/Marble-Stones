@@ -124,12 +124,19 @@ class PurchaseOrderService
             ];
         }
 
-        // Find supplier
-        $supplier = Supplier::where('name', 'like', "%{$supplierName}%")->first();
+        // Find supplier (or fallback to default system supplier if unspecified)
+        $supplier = null;
+        if (!empty($supplierName)) {
+            $supplier = Supplier::where('name', 'like', "%{$supplierName}%")->first();
+        }
+        if (!$supplier) {
+            $supplier = Supplier::first();
+        }
+
         if (!$supplier) {
             return [
                 'status' => 'error',
-                'message' => "Supplier '{$supplierName}' not found in the system.",
+                'message' => "No supplier found in the system.",
             ];
         }
 
@@ -153,10 +160,28 @@ class PurchaseOrderService
             }
 
             if (!$product) {
-                return [
-                    'status' => 'error',
-                    'message' => "Product '{$productIdentifier}' not found in catalogue.",
-                ];
+                // Try searching without thickness constraint or cleaning thickness string
+                $cleanedName = trim(preg_replace('/(\d+(\.\d+)?)\s*cm/i', '', $productIdentifier));
+                $product = $this->productService->findBySkuOrName($cleanedName ?: $productIdentifier, null);
+                if (!$product) {
+                    $found = $this->productService->search($cleanedName ?: $productIdentifier, null);
+                    $product = $found->first();
+                }
+            }
+
+            if (!$product) {
+                // Auto-create or resolve custom product entry so drafting custom orders succeeds
+                $cleanSku = 'CUST-' . strtoupper(substr(preg_replace('/[^a-zA-Z0-9]/', '', $productIdentifier), 0, 8)) . '-' . (int) ($thickness ?? 2) . 'CM';
+                $product = Product::firstOrCreate(
+                    ['sku' => $cleanSku],
+                    [
+                        'name' => trim(preg_replace('/(\d+(\.\d+)?)\s*cm/i', '', $productIdentifier)),
+                        'material' => 'Natural Stone',
+                        'color' => 'Custom',
+                        'thickness_cm' => $thickness ?? 2.0,
+                        'slab_size' => '126x63 in',
+                    ]
+                );
             }
 
             $qty = (int) ($item['quantity'] ?? 1);

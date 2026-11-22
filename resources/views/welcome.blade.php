@@ -26,22 +26,13 @@
                 <div class="flex items-center space-x-2">
                     <h1 class="text-base font-bold text-slate-100 tracking-tight">SlabERP Assistant</h1>
                     <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20">US Natural Stone & Quartz</span>
-                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 flex items-center space-x-1">
-                        <svg class="w-3 h-3 text-blue-400" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L14.4 7.2L20 8.4L16 12.8L17.2 18.4L12 15.6L6.8 18.4L8 12.8L4 8.4L9.6 7.2L12 2Z"/></svg>
-                        <span>Google Gemini</span>
-                    </span>
+                    
                 </div>
                 <p class="text-xs text-slate-400">Inventory & Purchasing AI Copilot</p>
             </div>
         </div>
 
         <div class="flex items-center space-x-4">
-            <!-- Active AI Agent Badge -->
-            <div class="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 flex items-center space-x-2 text-xs">
-                <span class="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span class="font-semibold text-slate-200">AI Agent</span>
-                <span class="text-[10px] text-slate-400 font-mono">(ts-agent:3001)</span>
-            </div>
 
             <!-- Role Switcher -->
             <div class="flex items-center space-x-2 bg-slate-950 border border-slate-800 rounded-lg p-1 text-xs">
@@ -108,7 +99,7 @@
                         <span>Full Access: Landed Cost & PO Creation Enabled</span>
                     </span>
                     <span class="text-slate-500">|</span>
-                    <span class="font-mono text-slate-400">Model: Google Gemini | Agent: AI Agent (Port 3001)</span>
+                    <span class="font-mono text-slate-400">Model: Google Gemini | Agent: AI Agent </span>
                 </div>
             </div>
 
@@ -131,20 +122,56 @@
                             <!-- Tool Call Breakdown -->
                             <template x-if="msg.tools && msg.tools.length > 0">
                                 <div class="mt-2.5 pt-2 border-t border-slate-800/80">
-                                    <div class="text-[11px] text-slate-400 font-mono flex items-center space-x-1.5 mb-1.5">
-                                        <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                                        <span>ERP Tool Called:</span>
-                                        <span class="font-bold text-amber-300" x-text="msg.tools[0].tool"></span>
-                                    </div>
-                                    <div class="bg-slate-950 p-2 rounded text-[11px] font-mono text-slate-300 overflow-x-auto border border-slate-800">
-                                        <div class="text-slate-500 text-[10px]">Input Parameters:</div>
-                                        <div x-text="JSON.stringify(msg.tools[0].input)"></div>
-                                    </div>
+                                    <template x-for="(t, idx) in msg.tools" :key="idx">
+                                        <div class="mb-2">
+                                            <!-- Execute SQL: live DB query badge (hiding raw SQL) -->
+                                            <template x-if="t.tool === 'execute_sql' || t.tool === 'executeSql'">
+                                                <div class="text-[11px] text-emerald-400 font-mono flex items-center space-x-1.5 py-0.5">
+                                                    <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                                                    <span>Queried live ERP database</span>
+                                                </div>
+                                            </template>
+
+                                            <!-- Create Draft PO Tool -->
+                                            <template x-if="t.tool === 'createDraftPurchaseOrder' || t.tool === 'create_draft_purchase_order'">
+                                                <div>
+                                                    <div class="text-[11px] text-amber-300 font-mono flex items-center space-x-1.5 mb-1">
+                                                        <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                                                        <span>ERP Tool:</span>
+                                                        <span class="font-bold text-amber-300">createDraftPurchaseOrder</span>
+                                                    </div>
+                                                    <template x-if="t.input">
+                                                        <div class="bg-slate-950 p-2 rounded text-[11px] font-mono text-slate-300 overflow-x-auto border border-slate-800">
+                                                            <div class="text-slate-500 text-[10px]">Draft Parameters:</div>
+                                                            <div x-text="JSON.stringify(t.input)"></div>
+                                                        </div>
+                                                    </template>
+                                                </div>
+                                            </template>
+
+                                            <!-- Other ERP Tools -->
+                                            <template x-if="t.tool !== 'execute_sql' && t.tool !== 'executeSql' && t.tool !== 'createDraftPurchaseOrder' && t.tool !== 'create_draft_purchase_order'">
+                                                <div>
+                                                    <div class="text-[11px] text-slate-400 font-mono flex items-center space-x-1.5 mb-1">
+                                                        <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                                                        <span>ERP Tool Called:</span>
+                                                        <span class="font-bold text-amber-300" x-text="t.tool"></span>
+                                                    </div>
+                                                    <template x-if="t.input">
+                                                        <div class="bg-slate-950 p-2 rounded text-[11px] font-mono text-slate-300 overflow-x-auto border border-slate-800">
+                                                            <div class="text-slate-500 text-[10px]">Input Parameters:</div>
+                                                            <div x-text="JSON.stringify(t.input)"></div>
+                                                        </div>
+                                                    </template>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </template>
                                 </div>
                             </template>
 
                             <!-- Interactive Quick Confirm Button for Pending Drafts -->
-                            <template x-if="msg.text && msg.text.includes('Reply &quot;confirm&quot;') || msg.text.includes('Reply &quot;confirm&quot;') || msg.text.includes('confirm to save')">
+                            <template x-if="msg.text && (msg.text.toLowerCase().includes('confirm') || msg.text.toLowerCase().includes('save it'))">
                                 <div class="mt-3 pt-2.5 border-t border-slate-800 flex items-center space-x-2">
                                     <button @click="sendPrompt('confirm')" class="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center space-x-1.5 shadow transition">
                                         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>

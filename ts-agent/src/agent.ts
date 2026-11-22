@@ -55,7 +55,7 @@ function isRelevantToDatabase(message: string, session: SessionState): boolean {
   }
 
   // Stone, quartz, inventory, warehouse, purchase orders, costs keywords
-  const erpPattern = /\b(slab|slabs|stone|quartz|marble|granite|quartzite|porcelain|calacatta|carrara|marquina|statuario|bianco|taj\s+mahal|thickness|2cm|3cm|sqft|inventory|stock|warehouse|warehouses|houston|dallas|chicago|supplier|suppliers|purchase\s+order|purchase\s+orders|po[- ]?\d+|draft\s+po|delayed|late|overdue|eta|freight|landed\s+cost|unit\s+cost|cost\s+per\s+slab|on\s+hand|available)\b/i;
+  const erpPattern = /\b(slab|slabs|stone|quartz|marble|granite|quartzite|porcelain|calacatta|carrara|marquina|statuario|bianco|taj\s*mahal|thickness|2cm|3cm|sqft|inventory|stock|warehouse|warehouses|houston|dallas|chicago|supplier|suppliers|purchase\s+order|purchase\s+orders|po[- ]?\d+|draft\s+po|create\s+draft|delayed|late|overdue|eta|freight|landed\s+cost|unit\s+cost|cost\s+per\s+slab|on\s+hand|available)\b/i;
   if (erpPattern.test(lower)) {
     return true;
   }
@@ -333,20 +333,31 @@ HOW TO OPERATE LIKE CHATGPT / CLAUDE TEXT-TO-SQL:
    - When the backend returns the database rows, analyze the data and synthesize a clear, friendly, and complete natural language answer.
    - You may also use specialized tools (\`check_stock\`, \`search_purchase_orders\`, \`get_landed_cost\`) where appropriate.
 
-2. ROLE-BASED ACCESS CONTROL (MANDATORY):
+2. NEVER SEND ACTUAL SQL TO END USER (STRICT MANDATORY):
+   - You must execute SQL queries internally via the \`execute_sql\` tool.
+   - NEVER output raw SQL queries (e.g. SELECT...), SQL syntax, or database code in your conversational text response to the user.
+   - Communicate strictly in clean, professional, conversational natural language.
+
+3. DRAFT PURCHASE ORDER WORKFLOW (MANDATORY):
+   - When the user asks to create a draft PO (e.g. "create draft PO for 10 slabs of 2 cm tajmahal white"):
+     Step A: You may execute SQL internally to look up products or suppliers in the database if needed.
+     Step B: You MUST then invoke the \`create_draft_purchase_order\` tool with supplier_name, items (product, quantity, unit_cost), and optional estimated_freight.
+       * If no supplier is specified by user, default to 'Supplier Y' or 'Supplier X'.
+       * If no unit cost is specified, default to a realistic cost (e.g. 150.00).
+     Step C: Once \`create_draft_purchase_order\` returns, present the draft summary clearly (Supplier, line items, quantity, total cost) and ask the user to reply "confirm":
+       'Reply "confirm" to save it.'
+   - When the user confirms (e.g. "confirm", "yes", "save it"), call \`confirm_draft_purchase_order\` to persist it to the database.
+
+4. ROLE-BASED ACCESS CONTROL (MANDATORY):
    - Current user role is: "${user.role}".
    ${user.role === 'sales' ? '- CRITICAL RESTRICTION FOR SALES: Because this user is in the SALES role, you MUST NEVER select or include `freight_cost`, `unit_cost`, or `bank_details` in your SQL queries! Any query containing these columns will be rejected by the server. When checking purchase orders or delayed orders for Sales, select ONLY `po.po_number`, `po.status`, `po.order_date`, `po.eta`, `s.name as supplier_name`, and `p.name as product_name`. If Sales asks for landed cost, unit cost, or freight, politely refuse: "Cost details are only available to the Purchasing team."' : '- Purchasing role: Full access to all columns, landed costs, freight, and drafting POs.'}
 
-3. DRAFT PO WORKFLOW:
-   - When asked to create a draft PO, use \`create_draft_purchase_order\` to prepare the draft and prompt the user to reply "confirm".
-   - When confirmed, use \`confirm_draft_purchase_order\` to save it.
-
-4. OUT-OF-DATABASE QUESTIONS (MANDATORY DENIAL):
+5. OUT-OF-DATABASE QUESTIONS (MANDATORY DENIAL):
    - If the user asks ANY question not relevant to our stone & quartz ERP database (e.g. world capitals, general trivia, history, programming, cities not in our ERP like "bhopal", etc.), YOU MUST DENY THE ANSWER in simple language:
    "I don't have proper data about it. I can only answer about inventory and purchasing."
    - Do NOT execute queries for non-ERP questions and never provide outside world facts.
 
-5. CONVERSATIONAL CONTEXT & CHECKPOINTER MEMORY:
+6. CONVERSATIONAL CONTEXT & CHECKPOINTER MEMORY:
    - Use checkpointer memory to track the conversation context across turns (e.g. remembering 2cm thickness or a specific product across follow-ups like "in dallas").`;
 
         const llmWithTools = this.llm.bindTools(tools);
@@ -364,18 +375,21 @@ HOW TO OPERATE LIKE CHATGPT / CLAUDE TEXT-TO-SQL:
           new HumanMessage(message),
         ];
 
-        const aiResponse = await llmWithTools.invoke(messages);
+        let currentMessages: any[] = [...messages];
+        let currentResponse = await llmWithTools.invoke(currentMessages);
+        let iterations = 0;
+        const maxIterations = 5;
 
-        let finalReply = '';
+        // Multi-turn tool execution loop (Text-to-SQL -> Data Evaluation -> Action Tool -> Final Response)
+        while (currentResponse.tool_calls && currentResponse.tool_calls.length > 0 && iterations < maxIterations) {
+          iterations++;
+          currentMessages.push(currentResponse);
 
-        if (aiResponse.tool_calls && aiResponse.tool_calls.length > 0) {
-          const toolMessages: ToolMessage[] = [];
-
-          for (const tc of aiResponse.tool_calls) {
+          for (const tc of currentResponse.tool_calls) {
             const toolInstance = toolMap[tc.name];
             if (toolInstance) {
               const toolResult = await toolInstance.invoke(tc.args);
-              toolMessages.push(
+              currentMessages.push(
                 new ToolMessage({
                   tool_call_id: tc.id || tc.name,
                   name: tc.name,
@@ -385,10 +399,17 @@ HOW TO OPERATE LIKE CHATGPT / CLAUDE TEXT-TO-SQL:
             }
           }
 
-          const followUp = await this.llm.invoke([...messages, aiResponse, ...toolMessages]);
-          finalReply = extractCleanText(followUp.content);
+          currentResponse = await llmWithTools.invoke(currentMessages);
+        }
 
-          if (!finalReply || finalReply.trim() === '') {
+        let finalReply = extractCleanText(currentResponse.content);
+
+        // Fallback response if model generated tool calls but empty prose
+        if (!finalReply || finalReply.trim() === '') {
+          const draftTool = toolsCalled.find(t => t.tool === 'createDraftPurchaseOrder' || t.tool === 'create_draft_purchase_order');
+          if (draftTool && draftTool.output) {
+            finalReply = draftTool.output.prompt || `Draft purchase order created: ${draftTool.output.summary || 'Details prepared'}. Reply "confirm" to save it.`;
+          } else {
             for (const tc of toolsCalled) {
               if (tc.output && tc.output.allowed === false) {
                 finalReply = tc.output.polite_refusal || 'Cost details are only available to the Purchasing team.';
@@ -396,8 +417,6 @@ HOW TO OPERATE LIKE CHATGPT / CLAUDE TEXT-TO-SQL:
               }
             }
           }
-        } else {
-          finalReply = extractCleanText(aiResponse.content);
         }
 
         // Domain guardrail: if no tool was called and question is not relevant to DB or greetings, deny in simple language
@@ -415,7 +434,7 @@ HOW TO OPERATE LIKE CHATGPT / CLAUDE TEXT-TO-SQL:
             new HumanMessage(message),
             new AIMessage(finalReply),
           ];
-          await this.checkpointer.put(
+          await (this.checkpointer as any).put(
             threadConfig,
             {
               v: 1,
@@ -427,19 +446,35 @@ HOW TO OPERATE LIKE CHATGPT / CLAUDE TEXT-TO-SQL:
               channel_versions: { messages: updatedMessages.length },
               versions_seen: {},
             },
-            {},
+            {
+              source: 'update',
+              step: updatedMessages.length,
+              parents: {},
+            },
             {}
           );
         } catch (ckptErr: any) {
           console.warn('Could not save to checkpointer memory:', ckptErr?.message || ckptErr);
         }
 
+        // Sanitize tools_called returned to client: never send raw SQL to the end user
+        const sanitizedToolsCalled = toolsCalled.map(tc => {
+          if (tc.tool === 'execute_sql' || tc.tool === 'executeSql') {
+            return {
+              tool: 'execute_sql',
+              input: { query_type: 'Live ERP Database Query' },
+              output: { status: 'executed_internally' },
+            };
+          }
+          return tc;
+        });
+
         return {
           conversation_id: conversationId,
           role: user.role,
           user_name: user.name,
           reply: finalReply,
-          tools_called: toolsCalled,
+          tools_called: sanitizedToolsCalled,
           tokens_used: 65,
           response_time_ms: Date.now() - startTime,
         };
