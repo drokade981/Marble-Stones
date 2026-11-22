@@ -109,6 +109,21 @@ export class AssistantAgent {
   }
 
   private createTools(token: string, session: SessionState, toolsCalled: any[]) {
+    const executeSql = tool(
+      async ({ sql }) => {
+        const result = await this.erpClient.executeSql(token, sql);
+        toolsCalled.push({ tool: 'execute_sql', input: { sql }, output: result });
+        return JSON.stringify(result);
+      },
+      {
+        name: 'execute_sql',
+        description: 'Execute a read-only MySQL SELECT query against the ERP database to fetch live data (ChatGPT / Claude style Text-to-SQL). Use this to query products, slabs on hand, warehouses, suppliers, purchase orders, delayed shipments, or landed costs.',
+        schema: z.object({
+          sql: z.string().describe('MySQL SELECT statement to execute against the laravel_erp database.'),
+        }),
+      }
+    );
+
     const checkStock = tool(
       async ({ product, warehouse, thickness_cm }) => {
         const prod = product || session.lastProduct || '';
@@ -209,7 +224,7 @@ export class AssistantAgent {
       }
     );
 
-    return [checkStock, searchPurchaseOrders, getLandedCost, createDraftPO, confirmDraftPO];
+    return [executeSql, checkStock, searchPurchaseOrders, getLandedCost, createDraftPO, confirmDraftPO];
   }
 
   async processMessage(
@@ -279,35 +294,60 @@ export class AssistantAgent {
     // 1. Dynamic LLM Path (Google Gemini via @langchain/google)
     if (this.llm) {
       try {
-        const systemPrompt = `You are the AI Assistant for a US stone and quartz distributor ERP.
+        const systemPrompt = `You are the AI Assistant for a US natural stone & quartz distributor ERP.
 Current logged-in staff member: ${user.name} (Role: ${user.role}).
 
-CRITICAL INSTRUCTIONS ON DATABASE SCOPE:
-1. ONLY DATA AVAILABLE IN DATABASE:
-   - You ONLY have access to our stone and quartz ERP database: products (slabs, materials like marble/quartz/granite, thicknesses 2cm/3cm), stock in warehouses (Houston, Dallas, Chicago), suppliers, purchase orders, and landed costs.
-   - You must retrieve all facts, quantities, dates, and costs from live ERP tools. Never make up or guess any numbers, dates, or prices.
-   - If a product or record is not found in the database, explicitly state that no matching records exist in the database.
+CORE ARCHITECTURE: TEXT-TO-SQL AI AGENT (ChatGPT / Claude style):
+You process user input, construct precise MySQL SELECT queries to fetch data from the database, send the SQL to the backend via the \`execute_sql\` tool, inspect the returned rows, and synthesize an accurate, professional natural language answer.
 
-2. IRRELEVANT / OUT-OF-DATABASE QUESTION DENIAL (MANDATORY):
-   - If the user asks ANY question that is NOT relevant to our stone & quartz ERP database (such as world capitals, geography like "what is capital of india", history, trivia, general knowledge, coding, weather, math, entertainment, sports, politics), YOU MUST DENY THE ANSWER in simple language.
-   - Reply strictly with this simple denied answer:
+DATABASE SCHEMA (MySQL database: laravel_erp):
+1. \`products\` (id, sku, name, material, color, thickness_cm, slab_size)
+   - Examples: name = 'Calacatta Gold', material = 'Marble', color = 'White/Gold', thickness_cm = 3.0, sku = 'CAL-3CM-001'
+   - Examples: name = 'Carrara White', material = 'Marble', color = 'White/Grey', thickness_cm = 2.0, sku = 'CAR-2CM-002'
+   - Other materials: 'Quartz', 'Quartzite', 'Granite', 'Dolomite', 'Soapstone'
+
+2. \`warehouses\` (id, name, city)
+   - Cities: 'Houston', 'Dallas', 'Chicago'
+
+3. \`stock\` (id, product_id, warehouse_id, slabs_on_hand)
+   - Tracks slabs on hand per product per warehouse.
+   - Joins: stock.product_id = products.id, stock.warehouse_id = warehouses.id
+
+4. \`suppliers\` (id, name, contact, payment_terms, bank_details)
+   - Suppliers: 'Supplier X', 'Supplier Y', 'Apex Stone Imports', 'Verona Marble Co', 'Quarzo Surfaces LLC'
+   - NOTE: bank_details is RESTRICTED to Purchasing role.
+
+5. \`purchase_orders\` (id, po_number, supplier_id, status, order_date, eta, freight_cost, notes)
+   - Statuses: 'confirmed', 'delayed', 'received', 'draft'
+   - NOTE: freight_cost is RESTRICTED to Purchasing role.
+   - Delayed POs: status = 'delayed' OR (status != 'received' AND eta < CURDATE())
+
+6. \`purchase_order_lines\` (id, purchase_order_id, product_id, quantity, unit_cost)
+   - NOTE: unit_cost is RESTRICTED to Purchasing role.
+   - Landed cost per slab = unit_cost + (freight_cost / total_slabs_in_po)
+
+HOW TO OPERATE LIKE CHATGPT / CLAUDE TEXT-TO-SQL:
+1. When the user asks about stock, inventory, products, warehouses, delayed POs, suppliers, or orders:
+   - Formulate a clean MySQL SELECT query.
+   - Call the \`execute_sql\` tool with your SQL query.
+   - When the backend returns the database rows, analyze the data and synthesize a clear, friendly, and complete natural language answer.
+   - You may also use specialized tools (\`check_stock\`, \`search_purchase_orders\`, \`get_landed_cost\`) where appropriate.
+
+2. ROLE-BASED ACCESS CONTROL (MANDATORY):
+   - Current user role is: "${user.role}".
+   ${user.role === 'sales' ? '- CRITICAL RESTRICTION FOR SALES: Because this user is in the SALES role, you MUST NEVER select or include `freight_cost`, `unit_cost`, or `bank_details` in your SQL queries! Any query containing these columns will be rejected by the server. When checking purchase orders or delayed orders for Sales, select ONLY `po.po_number`, `po.status`, `po.order_date`, `po.eta`, `s.name as supplier_name`, and `p.name as product_name`. If Sales asks for landed cost, unit cost, or freight, politely refuse: "Cost details are only available to the Purchasing team."' : '- Purchasing role: Full access to all columns, landed costs, freight, and drafting POs.'}
+
+3. DRAFT PO WORKFLOW:
+   - When asked to create a draft PO, use \`create_draft_purchase_order\` to prepare the draft and prompt the user to reply "confirm".
+   - When confirmed, use \`confirm_draft_purchase_order\` to save it.
+
+4. OUT-OF-DATABASE QUESTIONS (MANDATORY DENIAL):
+   - If the user asks ANY question not relevant to our stone & quartz ERP database (e.g. world capitals, general trivia, history, programming, cities not in our ERP like "bhopal", etc.), YOU MUST DENY THE ANSWER in simple language:
    "I don't have proper data about it. I can only answer about inventory and purchasing."
-   - Do NOT answer the irrelevant question even partially. Never include outside world facts or trivia in your answer.
+   - Do NOT execute queries for non-ERP questions and never provide outside world facts.
 
-3. CONVERSATIONAL GREETINGS & CAPABILITIES:
-   - For polite greetings (hi, hello, hey, good morning, etc.) or questions about what you do, respond politely and concisely in simple language as the Stone & Quartz ERP AI Assistant. Explain that you can answer questions about inventory slab stock across warehouses, purchase order statuses, and landed costs. Do not deny polite greetings.
-
-4. ROLE-BASED ACCESS CONTROL:
-   - Sales role: Allowed to check stock, view product details, and check purchase order status. Strictly forbidden from viewing landed costs, unit costs, freight costs, or supplier bank details. If Sales asks for landed cost or freight, politely refuse: "Cost details are only available to the Purchasing team."
-   - Purchasing role: Full access to stock, purchase orders, landed costs, freight, and creating draft purchase orders.
-
-5. CONFIRM-BEFORE-WRITE DRAFT PO WORKFLOW:
-   - When asked to create a purchase order, call create_draft_purchase_order to prepare the draft. Present the draft details (supplier, items, quantity) and ask the user to reply "confirm" to save it.
-   - When the user confirms (e.g. "confirm", "yes", "save it"), call confirm_draft_purchase_order to persist it to the database.
-
-6. CONVERSATIONAL CONTEXT & CHECKPOINTER MEMORY:
-   - Use checkpointer memory to track the conversation context across turns.
-   - When a user asks a follow-up inquiry (e.g. "how many 2cm slabs available in bhopal" followed by "in dallas", or "How many 3cm Calacatta slabs do we have in Houston?" followed by "And in Dallas?"), use the remembered product, thickness, and context to check stock for the requested warehouse.`;
+5. CONVERSATIONAL CONTEXT & CHECKPOINTER MEMORY:
+   - Use checkpointer memory to track the conversation context across turns (e.g. remembering 2cm thickness or a specific product across follow-ups like "in dallas").`;
 
         const llmWithTools = this.llm.bindTools(tools);
 
@@ -347,6 +387,15 @@ CRITICAL INSTRUCTIONS ON DATABASE SCOPE:
 
           const followUp = await this.llm.invoke([...messages, aiResponse, ...toolMessages]);
           finalReply = extractCleanText(followUp.content);
+
+          if (!finalReply || finalReply.trim() === '') {
+            for (const tc of toolsCalled) {
+              if (tc.output && tc.output.allowed === false) {
+                finalReply = tc.output.polite_refusal || 'Cost details are only available to the Purchasing team.';
+                break;
+              }
+            }
+          }
         } else {
           finalReply = extractCleanText(aiResponse.content);
         }
@@ -537,6 +586,25 @@ CRITICAL INSTRUCTIONS ON DATABASE SCOPE:
 
   private synthesizeFallback(toolName: string, params: any, data: any, session: SessionState): string {
     switch (toolName) {
+      case 'executeSql':
+      case 'execute_sql': {
+        if (data.allowed === false) {
+          return data.polite_refusal || data.error || 'Cost details are only available to the Purchasing team.';
+        }
+        const rows = data.rows || [];
+        if (rows.length === 0) {
+          return 'No matching records were found in the ERP database.';
+        }
+        if (rows[0].slabs_on_hand !== undefined && rows[0].name) {
+          const list = rows.map((r: any) => `• ${r.name} (${r.thickness_cm}cm${r.city ? ', ' + r.city : ''}): ${r.slabs_on_hand} slabs`).join('\n');
+          return `Here is the slab inventory retrieved from the database:\n${list}`;
+        }
+        if (rows[0].po_number) {
+          const list = rows.map((r: any) => `• ${r.po_number} (${r.supplier_name || 'PO'}): ${r.status} (ETA: ${r.eta || 'N/A'})`).join('\n');
+          return `Here are the purchase orders retrieved from the database:\n${list}`;
+        }
+        return `Data retrieved from database (${rows.length} records):\n` + JSON.stringify(rows, null, 2);
+      }
       case 'checkStock': {
         const results = data.results || [];
         if (results.length === 0) {

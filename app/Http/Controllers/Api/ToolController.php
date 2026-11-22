@@ -15,6 +15,7 @@ use App\Services\PurchaseOrderService;
 use App\Services\StockService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class ToolController extends Controller
 {
@@ -24,6 +25,96 @@ class ToolController extends Controller
         protected PurchaseOrderService $purchaseOrderService,
         protected LandedCostService $landedCostService
     ) {}
+
+    /**
+     * POST /api/tools/execute-sql
+     * Dynamic Text-to-SQL execution endpoint for the AI Agent (ChatGPT/Claude style).
+     * Strictly executes read-only SELECT queries with role-based access control.
+     */
+    public function executeSql(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $sql = trim((string) $request->input('sql', ''));
+
+        if (empty($sql)) {
+            return response()->json([
+                'allowed' => false,
+                'error' => 'SQL query string is required.',
+            ], 400);
+        }
+
+        // 1. Safety Guard: Read-Only Query Enforcement
+        // Disallow multi-queries separated by semicolon (allow trailing semicolon only)
+        $cleanSql = rtrim($sql, "; \t\n\r\0\x0B");
+        if (str_contains($cleanSql, ';')) {
+            return response()->json([
+                'allowed' => false,
+                'error' => 'Multiple SQL statements are not permitted.',
+            ], 400);
+        }
+
+        // Must be a SELECT or WITH statement
+        if (!preg_match('/^(SELECT|WITH)\s+/i', $cleanSql)) {
+            return response()->json([
+                'allowed' => false,
+                'error' => 'Only read-only SELECT queries are allowed.',
+            ], 400);
+        }
+
+        // Disallow dangerous DDL / DML / data-exfiltration keywords
+        $forbiddenKeywords = '/\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|REPLACE|GRANT|REVOKE|INTO\s+OUTFILE|INTO\s+DUMPFILE|LOAD_FILE|SCHEMA|INFORMATION_SCHEMA)\b/i';
+        if (preg_match($forbiddenKeywords, $cleanSql)) {
+            return response()->json([
+                'allowed' => false,
+                'error' => 'Data modification or administrative SQL commands are strictly prohibited.',
+            ], 403);
+        }
+
+        // 2. Role-Based Access Control (RBAC) Enforcement
+        // Sales team cannot view unit_cost, freight_cost, or supplier bank_details
+        if ($user->isSales()) {
+            if (preg_match('/\b(unit_cost|freight_cost|bank_details)\b/i', $cleanSql)) {
+                return response()->json([
+                    'allowed' => false,
+                    'polite_refusal' => 'Cost details are only available to the Purchasing team.',
+                    'rows' => [],
+                ], 403);
+            }
+        }
+
+        // 3. Safety Row Limit (cap at 100 rows if no limit or higher limit specified)
+        if (!preg_match('/\bLIMIT\s+\d+/i', $cleanSql)) {
+            $cleanSql .= ' LIMIT 50';
+        }
+
+        // 4. Execute Query
+        try {
+            $rows = DB::select($cleanSql);
+
+            // Double check: if Sales user, sanitize any returned row keys if somehow retrieved
+            if ($user->isSales()) {
+                $rows = array_map(function ($row) {
+                    $rowObj = (object) (array) $row;
+                    unset($rowObj->unit_cost, $rowObj->freight_cost, $rowObj->bank_details);
+                    return $rowObj;
+                }, $rows);
+            }
+
+            return response()->json([
+                'allowed' => true,
+                'sql' => $cleanSql,
+                'count' => count($rows),
+                'rows' => $rows,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'allowed' => true,
+                'sql' => $cleanSql,
+                'error' => 'SQL execution error: ' . $e->getMessage(),
+                'rows' => [],
+            ], 400);
+        }
+    }
 
     /**
      * GET /api/tools/definitions

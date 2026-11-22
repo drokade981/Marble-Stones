@@ -46,6 +46,18 @@ export class ErpClient {
     return response.data.user;
   }
 
+  async executeSql(token: string, sql: string) {
+    try {
+      const response = await this.client(token).post('/api/tools/execute-sql', { sql });
+      return response.data;
+    } catch (err: any) {
+      if (err.response && err.response.data) {
+        return err.response.data;
+      }
+      return { allowed: false, error: err.message };
+    }
+  }
+
   async checkStock(token: string, params: { product?: string; warehouse?: string; thickness_cm?: number }) {
     const response = await this.client(token).post('/api/tools/check-stock', params);
     return response.data;

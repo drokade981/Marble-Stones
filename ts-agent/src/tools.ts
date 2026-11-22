@@ -12,6 +12,17 @@ export class ToolExecutor {
   getDefinitions(): ToolDefinition[] {
     return [
       {
+        name: 'execute_sql',
+        description: 'Execute a read-only MySQL SELECT query against the ERP database to fetch live data (ChatGPT/Claude style text-to-SQL).',
+        parameters: {
+          type: 'object',
+          properties: {
+            sql: { type: 'string', description: 'Valid MySQL SELECT query string to execute against laravel_erp.' },
+          },
+          required: ['sql'],
+        },
+      },
+      {
         name: 'checkStock',
         description: 'Check slabs on hand for a stone/quartz product in a warehouse (Houston, Dallas, Chicago).',
         parameters: {
@@ -83,6 +94,9 @@ export class ToolExecutor {
 
   async execute(toolName: string, args: any, token: string) {
     switch (toolName) {
+      case 'executeSql':
+      case 'execute_sql':
+        return await this.erpClient.executeSql(token, args.sql);
       case 'checkStock':
         return await this.erpClient.checkStock(token, args);
       case 'searchPurchaseOrders':

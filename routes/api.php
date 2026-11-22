@@ -27,6 +27,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Direct Tool Endpoints for External Agents (e.g. TypeScript Node Agent)
     Route::prefix('tools')->group(function () {
         Route::get('/definitions', [ToolController::class, 'definitions']);
+        Route::post('/execute-sql', [ToolController::class, 'executeSql']);
         Route::post('/check-stock', [ToolController::class, 'checkStock']);
         Route::post('/search-purchase-orders', [ToolController::class, 'searchPurchaseOrders']);
         Route::post('/get-landed-cost', [ToolController::class, 'getLandedCost']);
