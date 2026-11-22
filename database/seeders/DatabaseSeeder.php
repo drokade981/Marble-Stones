@@ -17,14 +17,8 @@ class DatabaseSeeder extends Seeder
 {
     public function run(): void
     {
-        // Check if database is already seeded
-        if (Product::where('sku', 'CAL-3CM-001')->exists()) {
-            $this->command?->info('Database is already seeded with ERP inventory and purchase orders. Skipping seeder.');
-            return;
-        }
-
-        // 1. Create Users (Sales & Purchasing)
-        $salesUser = User::firstOrCreate(
+        // 1. Ensure Users (Sales & Purchasing) always exist with valid credentials
+        User::updateOrCreate(
             ['email' => 'sales@example.com'],
             [
                 'name' => 'Sarah Jenkins (Sales)',
@@ -33,7 +27,7 @@ class DatabaseSeeder extends Seeder
             ]
         );
 
-        $purchasingUser = User::firstOrCreate(
+        User::updateOrCreate(
             ['email' => 'purchasing@example.com'],
             [
                 'name' => 'Peter Vance (Purchasing)',
@@ -41,6 +35,12 @@ class DatabaseSeeder extends Seeder
                 'role' => User::ROLE_PURCHASING,
             ]
         );
+
+        // Check if ERP inventory and purchase orders are already seeded
+        if (Product::where('sku', 'CAL-3CM-001')->exists()) {
+            $this->command?->info('Database is already seeded with ERP inventory and purchase orders. Skipping inventory seeder.');
+            return;
+        }
 
         // 2. Create Warehouses (Houston, Dallas, Chicago)
         $warehouses = [

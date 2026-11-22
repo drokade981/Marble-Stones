@@ -36,19 +36,11 @@
         </div>
 
         <div class="flex items-center space-x-4">
-            <!-- Agent Architecture Toggle -->
-            <div class="bg-slate-950 border border-slate-800 rounded-lg p-1 flex items-center text-xs">
-                <button @click="agentType = 'laravel'"
-                        :class="agentType === 'laravel' ? 'bg-amber-500 text-slate-950 font-semibold shadow' : 'text-slate-400 hover:text-slate-200'"
-                        class="px-2.5 py-1 rounded transition">
-                    Laravel Agent
-                </button>
-                <button @click="agentType = 'ai-agent'"
-                        :class="agentType === 'ai-agent' ? 'bg-indigo-500 text-white font-semibold shadow' : 'text-slate-400 hover:text-slate-200'"
-                        class="px-2.5 py-1 rounded transition flex items-center space-x-1">
-                    <span>AI Agent</span>
-                    <span class="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                </button>
+            <!-- Active AI Agent Badge -->
+            <div class="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 flex items-center space-x-2 text-xs">
+                <span class="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span class="font-semibold text-slate-200">AI Agent</span>
+                <span class="text-[10px] text-slate-400 font-mono">(ts-agent:3001)</span>
             </div>
 
             <!-- Role Switcher -->
@@ -116,7 +108,7 @@
                         <span>Full Access: Landed Cost & PO Creation Enabled</span>
                     </span>
                     <span class="text-slate-500">|</span>
-                    <span class="font-mono text-slate-400" x-text="'Model: Google Gemini | Agent: ' + (agentType === 'laravel' ? 'Laravel Engine' : 'AI Agent (3001)')"></span>
+                    <span class="font-mono text-slate-400">Model: Google Gemini | Agent: AI Agent (Port 3001)</span>
                 </div>
             </div>
 
@@ -377,7 +369,6 @@
     <script>
         function erpApp() {
             return {
-                agentType: 'ai-agent', // 'laravel' or 'ai-agent'
                 activeTab: 'chat',
                 currentUser: {
                     name: 'Sarah Jenkins (Sales)',
@@ -385,6 +376,7 @@
                     role: 'sales',
                 },
                 authToken: '',
+                loginError: '',
                 conversationId: 'conv-' + Math.random().toString(36).substring(2, 10),
                 messages: [
                     {
@@ -405,6 +397,7 @@
 
                 async switchRole(roleName) {
                     const email = roleName === 'purchasing' ? 'purchasing@example.com' : 'sales@example.com';
+                    this.loginError = '';
                     try {
                         const res = await fetch('/api/login', {
                             method: 'POST',
@@ -412,11 +405,15 @@
                             body: JSON.stringify({ email, password: 'password123' })
                         });
                         const data = await res.json();
-                        if (res.ok) {
+                        if (res.ok && data.token) {
                             this.authToken = data.token;
                             this.currentUser = data.user;
+                        } else {
+                            this.loginError = data.message || 'Login failed.';
+                            console.error('Login failed:', data);
                         }
                     } catch (e) {
+                        this.loginError = e.message;
                         console.error('Login error', e);
                     }
                 },
@@ -435,22 +432,27 @@
                         await this.switchRole(this.currentUser?.role || 'sales');
                     }
 
+                    if (!this.authToken) {
+                        this.messages.push({
+                            role: 'assistant',
+                            text: 'Authentication required. Unable to establish session: ' + (this.loginError || 'Invalid credentials.'),
+                            tools: []
+                        });
+                        return;
+                    }
+
                     this.messages.push({ role: 'user', text, tools: [] });
                     this.userInput = '';
                     this.isWaiting = true;
                     this.scrollChat();
 
                     try {
-                        let endpoint = '/api/assistant';
-                        let headers = {
+                        const endpoint = '/api/ts-agent/chat';
+                        const headers = {
                             'Content-Type': 'application/json',
                             'Accept': 'application/json',
                             'Authorization': `Bearer ${this.authToken}`
                         };
-
-                        if (this.agentType === 'ai-agent') {
-                            endpoint = '/api/ts-agent/chat';
-                        }
 
                         const res = await fetch(endpoint, {
                             method: 'POST',
