@@ -17,10 +17,10 @@ export class ToolExecutor {
         parameters: {
           type: 'object',
           properties: {
-            product: { type: 'string', description: 'Product name or thickness (e.g. "3cm Calacatta", "Carrara").' },
+            product: { type: 'string', description: 'Product name or thickness (e.g. "3cm Calacatta", "Carrara"). Optional.' },
             warehouse: { type: 'string', description: 'City name (e.g. "Houston", "Dallas", "Chicago").' },
+            thickness_cm: { type: 'number', description: 'Slab thickness in cm (e.g. 2 or 3).' },
           },
-          required: ['product'],
         },
       },
       {

@@ -55,7 +55,7 @@ class AssistantController extends Controller
 
         foreach ($candidateUrls as $url) {
             try {
-                $resp = \Illuminate\Support\Facades\Http::timeout(35)
+                $resp = \Illuminate\Support\Facades\Http::timeout(90)
                     ->withToken($token)
                     ->post("{$url}/chat", [
                         'message' => $message,

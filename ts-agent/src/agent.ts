@@ -1,6 +1,7 @@
 import { ChatGoogle } from '@langchain/google';
 import { tool } from '@langchain/core/tools';
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
+import { MemorySaver } from '@langchain/langgraph';
 import z from 'zod';
 import { ErpClient, UserProfile } from './erpClient';
 import { ToolExecutor } from './tools';
@@ -8,6 +9,7 @@ import { ToolExecutor } from './tools';
 interface SessionState {
   lastProduct?: string;
   lastWarehouse?: string;
+  lastThickness?: number;
   lastPoNumber?: string;
   pendingDraftToken?: string;
   history: Array<{ role: 'user' | 'assistant'; text: string }>;
@@ -42,8 +44,13 @@ function isRelevantToDatabase(message: string, session: SessionState): boolean {
     return true;
   }
 
-  // Contextual follow-up warehouse inquiry
-  if (/^(and|what\s+about|how\s+about)\s+(in\s+)?(houston|dallas|chicago)\??$/i.test(lower)) {
+  // Follow-up warehouse inquiry (e.g. "in dallas", "and in dallas", "dallas", "what about houston")
+  if (/(houston|dallas|chicago)/i.test(lower)) {
+    return true;
+  }
+
+  // Follow-up thickness inquiry (e.g. "and 3cm?", "what about 2cm?", "how many 2cm slabs")
+  if (/\b([23])\s*cm\b/i.test(lower)) {
     return true;
   }
 
@@ -60,11 +67,17 @@ function isRelevantToDatabase(message: string, session: SessionState): boolean {
     return true;
   }
 
+  // Contextual follow-up when previous conversation history exists
+  if (session.history.length > 0 && lower.split(/\s+/).length <= 4) {
+    return true;
+  }
+
   return false;
 }
 
 export class AssistantAgent {
   private sessions: Map<string, SessionState> = new Map();
+  private checkpointer: MemorySaver = new MemorySaver();
   private toolExecutor: ToolExecutor;
   private llm: ChatGoogle | null = null;
 
@@ -98,15 +111,25 @@ export class AssistantAgent {
   private createTools(token: string, session: SessionState, toolsCalled: any[]) {
     const checkStock = tool(
       async ({ product, warehouse, thickness_cm }) => {
-        const result = await this.erpClient.checkStock(token, { product, warehouse, thickness_cm });
-        toolsCalled.push({ tool: 'checkStock', input: { product, warehouse, thickness_cm }, output: result });
+        const prod = product || session.lastProduct || '';
+        const thick = thickness_cm ?? session.lastThickness;
+        const wh = warehouse || session.lastWarehouse;
+        const result = await this.erpClient.checkStock(token, {
+          product: prod,
+          warehouse: wh,
+          thickness_cm: thick,
+        });
+        if (prod) session.lastProduct = prod;
+        if (thick) session.lastThickness = thick;
+        if (wh) session.lastWarehouse = wh;
+        toolsCalled.push({ tool: 'checkStock', input: { product: prod, warehouse: wh, thickness_cm: thick }, output: result });
         return JSON.stringify(result);
       },
       {
         name: 'check_stock',
         description: 'Check slabs on hand for a stone or quartz product across warehouses (Houston, Dallas, Chicago). Returns real inventory quantities.',
         schema: z.object({
-          product: z.string().describe('Product name, material, or color (e.g. "Calacatta Gold", "Carrara White", "Calacatta")'),
+          product: z.string().optional().describe('Product name, material, or color (e.g. "Calacatta Gold", "Carrara White", "Calacatta"). Can be omitted if checking all slabs or following up on previous product.'),
           warehouse: z.string().optional().describe('Warehouse city name (e.g. "Houston", "Dallas", "Chicago")'),
           thickness_cm: z.number().optional().describe('Slab thickness in cm (e.g. 2 or 3)'),
         }),
@@ -207,6 +230,16 @@ export class AssistantAgent {
     const session = this.getSession(conversationId);
     const lower = message.trim().toLowerCase();
 
+    // Contextual extraction: track thickness and warehouse mentions across turns
+    const tm = lower.match(/\b([23])\s*cm\b/i);
+    if (tm) {
+      session.lastThickness = parseInt(tm[1], 10);
+    }
+    const wm = lower.match(/\b(houston|dallas|chicago)\b/i);
+    if (wm) {
+      session.lastWarehouse = wm[1].charAt(0).toUpperCase() + wm[1].slice(1).toLowerCase();
+    }
+
     // Prompt injection security guard
     if (/(ignore\s+all\s+rules|system\s+override|act\s+as\s+admin|drop\s+table)/i.test(lower)) {
       return {
@@ -227,6 +260,21 @@ export class AssistantAgent {
     const toolsCalled: any[] = [];
     const tools = this.createTools(token, session, toolsCalled);
     const toolMap: Record<string, any> = Object.fromEntries(tools.map(t => [t.name, t]));
+
+    // Retrieve prior messages from LangGraph Checkpointer Memory
+    const threadConfig = { configurable: { thread_id: conversationId } };
+    let checkpointMessages: any[] = [];
+    try {
+      const tuple = await this.checkpointer.getTuple(threadConfig);
+      if (tuple && tuple.checkpoint && tuple.checkpoint.channel_values) {
+        const msgs = tuple.checkpoint.channel_values.messages;
+        if (Array.isArray(msgs)) {
+          checkpointMessages = msgs;
+        }
+      }
+    } catch (e: any) {
+      console.warn('Could not read from checkpointer memory:', e?.message || e);
+    }
 
     // 1. Dynamic LLM Path (Google Gemini via @langchain/google)
     if (this.llm) {
@@ -257,14 +305,18 @@ CRITICAL INSTRUCTIONS ON DATABASE SCOPE:
    - When asked to create a purchase order, call create_draft_purchase_order to prepare the draft. Present the draft details (supplier, items, quantity) and ask the user to reply "confirm" to save it.
    - When the user confirms (e.g. "confirm", "yes", "save it"), call confirm_draft_purchase_order to persist it to the database.
 
-6. CONVERSATIONAL CONTEXT:
-   - Remember the conversation context for follow-up questions (e.g. "How many 3cm Calacatta slabs do we have in Houston?" followed by "And in Dallas?").`;
+6. CONVERSATIONAL CONTEXT & CHECKPOINTER MEMORY:
+   - Use checkpointer memory to track the conversation context across turns.
+   - When a user asks a follow-up inquiry (e.g. "how many 2cm slabs available in bhopal" followed by "in dallas", or "How many 3cm Calacatta slabs do we have in Houston?" followed by "And in Dallas?"), use the remembered product, thickness, and context to check stock for the requested warehouse.`;
 
         const llmWithTools = this.llm.bindTools(tools);
 
-        const historyMessages = session.history.slice(-4).map(h =>
-          h.role === 'user' ? new HumanMessage(h.text) : new AIMessage(h.text)
-        );
+        // Feed prior conversation messages from checkpointer memory (up to last 8 messages)
+        const historyMessages = checkpointMessages.length > 0
+          ? checkpointMessages.slice(-8)
+          : session.history.slice(-8).map(h =>
+              h.role === 'user' ? new HumanMessage(h.text) : new AIMessage(h.text)
+            );
 
         const messages = [
           new SystemMessage(systemPrompt),
@@ -306,6 +358,32 @@ CRITICAL INSTRUCTIONS ON DATABASE SCOPE:
 
         session.history.push({ role: 'user', text: message });
         session.history.push({ role: 'assistant', text: finalReply });
+
+        // Save conversation state into LangGraph Checkpointer Memory
+        try {
+          const updatedMessages = [
+            ...checkpointMessages,
+            new HumanMessage(message),
+            new AIMessage(finalReply),
+          ];
+          await this.checkpointer.put(
+            threadConfig,
+            {
+              v: 1,
+              id: `ckpt-${Date.now()}`,
+              ts: new Date().toISOString(),
+              channel_values: {
+                messages: updatedMessages,
+              },
+              channel_versions: { messages: updatedMessages.length },
+              versions_seen: {},
+            },
+            {},
+            {}
+          );
+        } catch (ckptErr: any) {
+          console.warn('Could not save to checkpointer memory:', ckptErr?.message || ckptErr);
+        }
 
         return {
           conversation_id: conversationId,
@@ -375,13 +453,18 @@ CRITICAL INSTRUCTIONS ON DATABASE SCOPE:
       }
       const delayedOnly = /delayed|late|overdue/i.test(lower);
       toolParams = { supplier_name: supplierName, delayed_only: delayedOnly };
-    } else if (/^(and|what\s+about|how\s+about)\s+(in\s+)?(houston|dallas|chicago)\??$/i.test(lower)) {
+    } else if (/(houston|dallas|chicago)/i.test(lower)) {
       toolName = 'checkStock';
       const m = lower.match(/(houston|dallas|chicago)/i);
-      const city = m ? m[1].charAt(0).toUpperCase() + m[1].slice(1) : 'Dallas';
+      const city = m ? m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase() : 'Dallas';
+      let prod = session.lastProduct || '';
+      let thick = session.lastThickness;
+      const tm = lower.match(/\b([23])\s*cm\b/i);
+      if (tm) thick = parseInt(tm[1], 10);
       toolParams = {
-        product: session.lastProduct || '3cm Calacatta Gold',
+        product: prod,
         warehouse: city,
+        thickness_cm: thick,
       };
     } else if (/slabs?|stock|inventory|calacatta|carrara|marble|quartz/i.test(lower)) {
       toolName = 'checkStock';
@@ -395,10 +478,10 @@ CRITICAL INSTRUCTIONS ON DATABASE SCOPE:
       let product = cleanMsg.replace(/(how many|slabs?|do we have|in stock|stock|available|in\s+(houston|dallas|chicago))/gi, '').trim();
       product = product.replace(/\s+/g, ' ').trim();
       if (!product || product.length < 3) {
-        product = session.lastProduct || '3cm Calacatta Gold';
+        product = session.lastProduct || '';
       }
 
-      let thickness: number | undefined = undefined;
+      let thickness = session.lastThickness;
       const tm = product.match(/\b([23])\s*cm\b/i);
       if (tm) {
         thickness = parseInt(tm[1], 10);
@@ -455,19 +538,29 @@ CRITICAL INSTRUCTIONS ON DATABASE SCOPE:
   private synthesizeFallback(toolName: string, params: any, data: any, session: SessionState): string {
     switch (toolName) {
       case 'checkStock': {
-        const top = data.results?.[0];
-        if (!top) {
-          return data.message || `No products found matching '${params.product}'.`;
+        const results = data.results || [];
+        if (results.length === 0) {
+          return data.message || `No products found matching '${params.product || 'inventory query'}'.`;
         }
-        const prodName = `${top.thickness_cm}cm ${top.name}`;
-        session.lastProduct = prodName;
-        const whCity = data.resolved_warehouse;
-        if (whCity && whCity !== 'All Warehouses' && data.specific_slabs_on_hand !== null) {
-          session.lastWarehouse = whCity;
-          return `There are ${data.specific_slabs_on_hand} slabs of ${prodName} in the ${whCity} warehouse.`;
+        const whCity = data.resolved_warehouse || 'the warehouse';
+        if (results.length === 1) {
+          const top = results[0];
+          const prodName = `${top.thickness_cm}cm ${top.name}`;
+          session.lastProduct = prodName;
+          if (whCity && whCity !== 'All Warehouses' && data.specific_slabs_on_hand !== null) {
+            session.lastWarehouse = whCity;
+            return `There are ${data.specific_slabs_on_hand} slabs of ${prodName} in the ${whCity} warehouse.`;
+          }
+          const breakdown = top.warehouses.map((w: any) => `${w.city}: ${w.slabs_on_hand}`).join(', ');
+          return `We have ${top.total_slabs_on_hand} slabs of ${prodName} on hand across warehouses (${breakdown}).`;
+        } else {
+          const itemsText = results.map((r: any) => {
+            const wh = r.warehouses?.find((w: any) => w.city.toLowerCase() === whCity.toLowerCase());
+            const qty = wh ? wh.slabs_on_hand : r.total_slabs_on_hand;
+            return `• ${r.name} (${r.thickness_cm}cm): ${qty} slabs`;
+          }).join('\n');
+          return `Here is the slab inventory for ${whCity}:\n${itemsText}`;
         }
-        const breakdown = top.warehouses.map((w: any) => `${w.city}: ${w.slabs_on_hand}`).join(', ');
-        return `We have ${top.total_slabs_on_hand} slabs of ${prodName} on hand across warehouses (${breakdown}).`;
       }
       case 'getLandedCost': {
         const lines = data.data?.lines || [];
