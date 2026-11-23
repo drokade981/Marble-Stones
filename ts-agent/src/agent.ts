@@ -108,7 +108,7 @@ export class AssistantAgent {
     return this.sessions.get(conversationId)!;
   }
 
-  private createTools(token: string, session: SessionState, toolsCalled: any[]) {
+  private createTools(user: UserProfile, token: string, session: SessionState, toolsCalled: any[]) {
     const executeSql = tool(
       async ({ sql }) => {
         const result = await this.erpClient.executeSql(token, sql);
@@ -170,6 +170,12 @@ export class AssistantAgent {
 
     const getLandedCost = tool(
       async ({ po_number }) => {
+        if (user.role === 'sales') {
+          return JSON.stringify({
+            allowed: false,
+            polite_refusal: 'Cost details are only available to the Purchasing team.',
+          });
+        }
         const result = await this.erpClient.getLandedCost(token, po_number);
         toolsCalled.push({ tool: 'getLandedCost', input: { po_number }, output: result });
         return JSON.stringify(result);
@@ -185,6 +191,12 @@ export class AssistantAgent {
 
     const createDraftPO = tool(
       async ({ supplier_name, items, estimated_freight }) => {
+        if (user.role === 'sales') {
+          return JSON.stringify({
+            allowed: false,
+            polite_refusal: 'Creating draft purchase orders is restricted to the Purchasing team.',
+          });
+        }
         const result = await this.erpClient.createDraftPO(token, { supplier_name, items, estimated_freight });
         if (result && result.draft_token) {
           session.pendingDraftToken = result.draft_token;
@@ -209,6 +221,12 @@ export class AssistantAgent {
 
     const confirmDraftPO = tool(
       async ({ draft_token }) => {
+        if (user.role === 'sales') {
+          return JSON.stringify({
+            allowed: false,
+            polite_refusal: 'Confirming purchase orders is restricted to the Purchasing team.',
+          });
+        }
         const tokenToUse = draft_token || session.pendingDraftToken;
         const result = await this.erpClient.confirmDraftPO(token, tokenToUse);
         session.pendingDraftToken = undefined;
@@ -223,6 +241,11 @@ export class AssistantAgent {
         }),
       }
     );
+
+    // Strict Role Restriction: Sales users have NO access to insert, draft, or confirm POs, or view landed costs
+    if (user.role === 'sales') {
+      return [executeSql, checkStock, searchPurchaseOrders];
+    }
 
     return [executeSql, checkStock, searchPurchaseOrders, getLandedCost, createDraftPO, confirmDraftPO];
   }
@@ -273,7 +296,7 @@ export class AssistantAgent {
     }
 
     const toolsCalled: any[] = [];
-    const tools = this.createTools(token, session, toolsCalled);
+    const tools = this.createTools(user, token, session, toolsCalled);
     const toolMap: Record<string, any> = Object.fromEntries(tools.map(t => [t.name, t]));
 
     // Retrieve prior messages from LangGraph Checkpointer Memory
@@ -319,7 +342,7 @@ DATABASE SCHEMA (MySQL database: laravel_erp):
 
 5. \`purchase_orders\` (id, po_number, supplier_id, status, order_date, eta, freight_cost, notes)
    - Statuses: 'confirmed', 'delayed', 'received', 'draft'
-   - NOTE: freight_cost is RESTRICTED to Purchasing role.
+   - NOTE: freight_cost and draft purchase orders are RESTRICTED to Purchasing role.
    - Delayed POs: status = 'delayed' OR (status != 'received' AND eta < CURDATE())
 
 6. \`purchase_order_lines\` (id, purchase_order_id, product_id, quantity, unit_cost)
@@ -338,8 +361,8 @@ HOW TO OPERATE LIKE CHATGPT / CLAUDE TEXT-TO-SQL:
    - NEVER output raw SQL queries (e.g. SELECT...), SQL syntax, or database code in your conversational text response to the user.
    - Communicate strictly in clean, professional, conversational natural language.
 
-3. DRAFT PURCHASE ORDER WORKFLOW (MANDATORY):
-   - When the user asks to create a draft PO (e.g. "create draft PO for 10 slabs of 2 cm tajmahal white"):
+3. DRAFT PURCHASE ORDER WORKFLOW (MANDATORY FOR PURCHASING ONLY):
+   - When a PURCHASING user asks to create a draft PO (e.g. "create draft PO for 10 slabs of 2 cm tajmahal white"):
      Step A: You may execute SQL internally to look up products or suppliers in the database if needed.
      Step B: You MUST then invoke the \`create_draft_purchase_order\` tool with supplier_name, items (product, quantity, unit_cost), and optional estimated_freight.
        * If no supplier is specified by user, default to 'Supplier Y' or 'Supplier X'.
@@ -350,7 +373,10 @@ HOW TO OPERATE LIKE CHATGPT / CLAUDE TEXT-TO-SQL:
 
 4. ROLE-BASED ACCESS CONTROL (MANDATORY):
    - Current user role is: "${user.role}".
-   ${user.role === 'sales' ? '- CRITICAL RESTRICTION FOR SALES: Because this user is in the SALES role, you MUST NEVER select or include `freight_cost`, `unit_cost`, or `bank_details` in your SQL queries! Any query containing these columns will be rejected by the server. When checking purchase orders or delayed orders for Sales, select ONLY `po.po_number`, `po.status`, `po.order_date`, `po.eta`, `s.name as supplier_name`, and `p.name as product_name`. If Sales asks for landed cost, unit cost, or freight, politely refuse: "Cost details are only available to the Purchasing team."' : '- Purchasing role: Full access to all columns, landed costs, freight, and drafting POs.'}
+   ${user.role === 'sales' ? `- CRITICAL RESTRICTIONS FOR SALES:
+   1. Sales users have NO ACCESS to insert, draft, or confirm purchase orders. If a sales user asks to create, draft, or confirm a purchase order, YOU MUST REFUSE IMMEDIATELY: "I apologize, but creating and confirming draft purchase orders is restricted to the Purchasing team. As a member of the Sales team, you do not have permission to draft or confirm purchase orders." Do NOT create any draft, do NOT call draft tools, and do NOT ask for confirmation.
+   2. Sales users CANNOT view draft purchase order data, unit costs, landed costs, freight, or supplier bank details. Never show draft parameters, line items, or cost figures to sales.
+   3. In SQL queries for Sales, NEVER select or include freight_cost, unit_cost, or bank_details, and NEVER select draft purchase orders (status = 'draft'). Any query violating this will be rejected.` : '- Purchasing role: Full access to all columns, landed costs, freight, and drafting POs.'}
 
 5. OUT-OF-DATABASE QUESTIONS (MANDATORY DENIAL):
    - If the user asks ANY question not relevant to our stone & quartz ERP database (e.g. world capitals, general trivia, history, programming, cities not in our ERP like "bhopal", etc.), YOU MUST DENY THE ANSWER in simple language:
@@ -457,17 +483,36 @@ HOW TO OPERATE LIKE CHATGPT / CLAUDE TEXT-TO-SQL:
           console.warn('Could not save to checkpointer memory:', ckptErr?.message || ckptErr);
         }
 
-        // Sanitize tools_called returned to client: never send raw SQL to the end user
-        const sanitizedToolsCalled = toolsCalled.map(tc => {
-          if (tc.tool === 'execute_sql' || tc.tool === 'executeSql') {
-            return {
-              tool: 'execute_sql',
-              input: { query_type: 'Live ERP Database Query' },
-              output: { status: 'executed_internally' },
-            };
-          }
-          return tc;
-        });
+        // Sanitize tools_called returned to client:
+        // 1. Never send raw SQL to the end user
+        // 2. Never return draft tools, draft parameters, or denied tools to the Sales role
+        const sanitizedToolsCalled = toolsCalled
+          .filter(tc => {
+            if (user.role === 'sales') {
+              if (
+                tc.tool === 'createDraftPurchaseOrder' ||
+                tc.tool === 'create_draft_purchase_order' ||
+                tc.tool === 'confirmDraftPurchaseOrder' ||
+                tc.tool === 'confirm_draft_purchase_order' ||
+                tc.tool === 'getLandedCost' ||
+                tc.tool === 'get_landed_cost' ||
+                tc.output?.allowed === false
+              ) {
+                return false;
+              }
+            }
+            return true;
+          })
+          .map(tc => {
+            if (tc.tool === 'execute_sql' || tc.tool === 'executeSql') {
+              return {
+                tool: 'execute_sql',
+                input: { query_type: 'Live ERP Database Query' },
+                output: { status: 'executed_internally' },
+              };
+            }
+            return tc;
+          });
 
         return {
           conversation_id: conversationId,
@@ -499,6 +544,37 @@ HOW TO OPERATE LIKE CHATGPT / CLAUDE TEXT-TO-SQL:
     let toolName = '';
     let toolParams: any = {};
     const toolsCalled: any[] = [];
+
+    // Strict Role Enforcement for Sales in Fallback Engine:
+    // Sales users cannot create, draft, or confirm purchase orders, or view landed costs
+    if (user.role === 'sales') {
+      if (
+        /create\s+(a\s+)?draft\s+po|draft\s+po\s+for|create\s+po\s+for/i.test(lower) ||
+        /^(confirm|yes\s*,?\s*confirm|save\s+it)\b/i.test(lower)
+      ) {
+        return {
+          conversation_id: conversationId,
+          role: user.role,
+          user_name: user.name,
+          reply: 'I apologize, but creating and confirming draft purchase orders is restricted to the Purchasing team. As a member of the Sales team, you do not have permission to draft or confirm purchase orders.',
+          tools_called: [],
+          tokens_used: 25,
+          response_time_ms: Date.now() - startTime,
+        };
+      }
+
+      if (/landed\s+cost|cost\s+per\s+slab/i.test(lower)) {
+        return {
+          conversation_id: conversationId,
+          role: user.role,
+          user_name: user.name,
+          reply: 'Cost details are only available to the Purchasing team.',
+          tools_called: [],
+          tokens_used: 15,
+          response_time_ms: Date.now() - startTime,
+        };
+      }
+    }
 
     if (/^(confirm|yes\s*,?\s*confirm|save\s+it)\b/i.test(lower)) {
       toolName = 'confirmDraftPurchaseOrder';

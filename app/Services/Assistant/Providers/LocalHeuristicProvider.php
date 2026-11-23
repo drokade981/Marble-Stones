@@ -25,6 +25,21 @@ class LocalHeuristicProvider implements AiProviderInterface
             ];
         }
 
+        // Strict Role Check: Sales users cannot draft or confirm purchase orders
+        if ($user->isSales()) {
+            if (
+                preg_match('/create\s+(a\s+)?draft\s+po/i', $lower) ||
+                preg_match('/draft\s+po\s+for/i', $lower) ||
+                preg_match('/create\s+po\s+for/i', $lower) ||
+                preg_match('/^(confirm|yes\s*,?\s*confirm|save\s+it|please\s+confirm)\b/i', $lower)
+            ) {
+                return [
+                    'type' => 'direct_response',
+                    'text' => 'Draft purchase order creation and confirmation are restricted to the Purchasing team.',
+                ];
+            }
+        }
+
         // 1. Confirm draft PO action
         if (preg_match('/^(confirm|yes\s*,?\s*confirm|save\s+it|please\s+confirm)\b/i', $lower)) {
             return [

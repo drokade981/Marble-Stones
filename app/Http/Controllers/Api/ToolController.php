@@ -71,12 +71,12 @@ class ToolController extends Controller
         }
 
         // 2. Role-Based Access Control (RBAC) Enforcement
-        // Sales team cannot view unit_cost, freight_cost, or supplier bank_details
+        // Sales team cannot view unit_cost, freight_cost, supplier bank_details, or draft orders
         if ($user->isSales()) {
-            if (preg_match('/\b(unit_cost|freight_cost|bank_details)\b/i', $cleanSql)) {
+            if (preg_match('/\b(unit_cost|freight_cost|bank_details|draft_purchase_orders)\b/i', $cleanSql)) {
                 return response()->json([
                     'allowed' => false,
-                    'polite_refusal' => 'Cost details are only available to the Purchasing team.',
+                    'polite_refusal' => 'Cost and draft order details are only available to the Purchasing team.',
                     'rows' => [],
                 ], 403);
             }
@@ -91,8 +91,12 @@ class ToolController extends Controller
         try {
             $rows = DB::select($cleanSql);
 
-            // Double check: if Sales user, sanitize any returned row keys if somehow retrieved
+            // Double check: if Sales user, sanitize any returned row keys and hide draft orders
             if ($user->isSales()) {
+                $rows = array_values(array_filter($rows, function ($row) {
+                    $rowArr = (array) $row;
+                    return !isset($rowArr['status']) || strtolower((string) $rowArr['status']) !== 'draft';
+                }));
                 $rows = array_map(function ($row) {
                     $rowObj = (object) (array) $row;
                     unset($rowObj->unit_cost, $rowObj->freight_cost, $rowObj->bank_details);

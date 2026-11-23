@@ -111,7 +111,7 @@
                                 ? 'bg-gradient-to-r from-amber-600 to-amber-700 text-slate-950 font-medium rounded-br-xs'
                                 : 'bg-slate-900 border border-slate-800 text-slate-200 rounded-bl-xs'">
                             <div class="text-xs opacity-60 mb-1 flex items-center justify-between space-x-4">
-                                <span class="font-semibold uppercase tracking-wider text-[10px]" x-text="msg.role === 'user' ? (currentUser.name || 'You') : 'ERP Assistant'"></span>
+                                <span class="font-semibold uppercase tracking-wider text-[10px]" x-text="msg.role === 'user' ? (msg.userName || (currentUser && currentUser.name) || 'You') : 'ERP Assistant'"></span>
                                 <span x-show="msg.response_time_ms" class="text-[10px] text-amber-400 font-mono" x-text="msg.response_time_ms + 'ms · ' + (msg.tokens_used || 0) + ' tokens'"></span>
                             </div>
 
@@ -123,8 +123,8 @@
                                     <template x-for="(t, idx) in msg.tools" :key="idx">
                                         <div class="mb-2">
 
-                                            <!-- Create Draft PO Tool -->
-                                            <template x-if="t.tool === 'createDraftPurchaseOrder' || t.tool === 'create_draft_purchase_order'">
+                                            <!-- Create Draft PO Tool (Purchasing only) -->
+                                            <template x-if="(t.tool === 'createDraftPurchaseOrder' || t.tool === 'create_draft_purchase_order') && currentUser.role === 'purchasing' && t.output?.allowed !== false">
                                                 <div>
                                                     <div class="text-[11px] text-amber-300 font-mono flex items-center space-x-1.5 mb-1">
                                                         <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
@@ -140,8 +140,8 @@
                                                 </div>
                                             </template>
 
-                                            <!-- Other ERP Tools -->
-                                            <template x-if="t.tool !== 'execute_sql' && t.tool !== 'executeSql' && t.tool !== 'createDraftPurchaseOrder' && t.tool !== 'create_draft_purchase_order'">
+                                            <!-- Other ERP Tools (hide costs and drafts from Sales) -->
+                                            <template x-if="t.tool !== 'execute_sql' && t.tool !== 'executeSql' && t.tool !== 'createDraftPurchaseOrder' && t.tool !== 'create_draft_purchase_order' && !(currentUser.role === 'sales' && (t.tool === 'confirmDraftPurchaseOrder' || t.tool === 'confirm_draft_purchase_order' || t.tool === 'getLandedCost' || t.tool === 'get_landed_cost' || t.output?.allowed === false))">
                                                 <div>
                                                     <div class="text-[11px] text-slate-400 font-mono flex items-center space-x-1.5 mb-1">
                                                         <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
@@ -156,6 +156,10 @@
                                                     </template>
                                                 </div>
                                             </template>
+                                        </div>
+                                    </template>
+                                </div>
+                            </template>
                                         </div>
                                     </template>
                                 </div>
@@ -435,16 +439,24 @@
                 isLoadingLogs: false,
 
                 isDraftAwaitingConfirmation(msg) {
+                    // Only Purchasing role can insert or confirm draft purchase orders!
+                    if (!this.currentUser || this.currentUser.role !== 'purchasing') {
+                        return false;
+                    }
+
                     if (!msg || !msg.text) return false;
                     const lower = msg.text.toLowerCase();
+
                     // Do not show if already confirmed / successfully saved
                     if (lower.includes('successfully confirmed') || lower.includes('has been confirmed') || lower.includes('has been successfully created and saved')) return false;
 
-                    // Check if tools called included create draft PO
+                    // Do not show if request was refused or restricted
+                    if (lower.includes('restricted') || lower.includes('unable to') || lower.includes('not have permission') || lower.includes('cannot create')) return false;
+
+                    // Check if tools called included create draft PO with successful allowed status
                     const hasDraftTool = msg.tools && msg.tools.some(t =>
-                        t.tool === 'createDraftPurchaseOrder' ||
-                        t.tool === 'create_draft_purchase_order' ||
-                        (t.output && t.output.status === 'draft_pending_confirmation')
+                        (t.tool === 'createDraftPurchaseOrder' || t.tool === 'create_draft_purchase_order') &&
+                        t.output && t.output.allowed !== false && t.output.status !== 'forbidden'
                     );
 
                     // Check for explicit call to confirm the draft
@@ -494,6 +506,8 @@
                         if (res.ok && data.token) {
                             this.authToken = data.token;
                             this.currentUser = data.user;
+                            // Distinct conversation ID per role to isolate session state & pending drafts
+                            this.conversationId = 'conv-' + roleName + '-' + Math.random().toString(36).substring(2, 8);
                         } else {
                             this.loginError = data.message || 'Login failed.';
                             console.error('Login failed:', data);
@@ -527,7 +541,13 @@
                         return;
                     }
 
-                    this.messages.push({ role: 'user', text, tools: [] });
+                    this.messages.push({
+                        role: 'user',
+                        text,
+                        tools: [],
+                        userName: this.currentUser?.name || (this.currentUser?.role === 'purchasing' ? 'Peter Vance (Purchasing)' : 'Sarah Jenkins (Sales)'),
+                        userRole: this.currentUser?.role || 'sales',
+                    });
                     this.userInput = '';
                     this.isWaiting = true;
                     this.scrollChat();

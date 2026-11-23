@@ -57,6 +57,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/purchase-orders', function (Request $request) {
         $user = $request->user();
         $query = PurchaseOrder::with(['supplier', 'lines.product'])->latest('order_date');
+        // Exclude draft purchase orders for the sales role
+        if ($user->isSales()) {
+            $query->where('status', '!=', 'draft');
+        }
         $orders = $query->get()->map(function ($po) use ($user) {
             $isPurchasing = $user->isPurchasing();
             return [

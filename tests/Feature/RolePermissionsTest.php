@@ -121,5 +121,45 @@ class RolePermissionsTest extends TestCase
         $this->assertArrayHasKey('total_amount', $order);
         $this->assertArrayHasKey('supplier_bank_details', $order);
     }
+
+    public function test_sales_user_cannot_see_draft_purchase_orders(): void
+    {
+        // 1. Create a draft PO with purchasing user
+        $draftRes = $this->actingAs($this->purchasingUser, 'sanctum')
+            ->postJson('/api/tools/create-draft-po', [
+                'supplier_name' => 'Supplier Y',
+                'items' => [
+                    ['product' => '2cm Carrara', 'quantity' => 15, 'unit_cost' => 80.00],
+                ],
+            ]);
+        $draftToken = $draftRes->json('draft_token');
+        $this->assertNotEmpty($draftToken);
+
+        // 2. Sales user attempts to confirm draft PO -> Forbidden 403
+        $confirmRes = $this->actingAs($this->salesUser, 'sanctum')
+            ->postJson('/api/tools/confirm-draft-po', [
+                'draft_token' => $draftToken,
+            ]);
+        $confirmRes->assertStatus(403)
+            ->assertJsonPath('allowed', false);
+
+        // 3. Sales user searches purchase orders -> draft orders are filtered out
+        $searchRes = $this->actingAs($this->salesUser, 'sanctum')
+            ->postJson('/api/tools/search-purchase-orders', []);
+        $searchRes->assertStatus(200);
+        $orders = $searchRes->json('purchase_orders');
+        foreach ($orders as $order) {
+            $this->assertNotEquals('draft', strtolower($order['status']));
+        }
+
+        // 4. Sales user GET /api/purchase-orders -> draft orders are filtered out
+        $listRes = $this->actingAs($this->salesUser, 'sanctum')
+            ->getJson('/api/purchase-orders');
+        $listRes->assertStatus(200);
+        $poList = $listRes->json();
+        foreach ($poList as $po) {
+            $this->assertNotEquals('draft', strtolower($po['status']));
+        }
+    }
 }
 

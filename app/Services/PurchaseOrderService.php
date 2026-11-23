@@ -45,6 +45,11 @@ class PurchaseOrderService
             $query->where('status', $status);
         }
 
+        // Strict Role Check: Draft purchase orders are never shown to the Sales role
+        if ($user->isSales()) {
+            $query->where('status', '!=', 'draft');
+        }
+
         $isPurchasing = $user->isPurchasing();
         $today = Carbon::today();
 
