@@ -26,7 +26,7 @@
                 <div class="flex items-center space-x-2">
                     <h1 class="text-base font-bold text-slate-100 tracking-tight">SlabERP Assistant</h1>
                     <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20">US Natural Stone & Quartz</span>
-                    
+                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20">Google Gemini</span>
                 </div>
                 <p class="text-xs text-slate-400">Inventory & Purchasing AI Copilot</p>
             </div>
@@ -98,6 +98,8 @@
                         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                         <span>Full Access: Landed Cost & PO Creation Enabled</span>
                     </span>
+                    <span class="text-slate-500">|</span>
+                    <span class="font-mono text-slate-400">Model: Google Gemini | Agent: AI Agent (3001)</span>
                 </div>
             </div>
 
@@ -122,6 +124,14 @@
                                 <div class="mt-2.5 pt-2 border-t border-slate-800/80">
                                     <template x-for="(t, idx) in msg.tools" :key="idx">
                                         <div class="mb-2">
+
+                                            <!-- Execute SQL: live DB query badge (hiding raw SQL) -->
+                                            <template x-if="t.tool === 'execute_sql' || t.tool === 'executeSql'">
+                                                <div class="text-[11px] text-emerald-400 font-mono flex items-center space-x-1.5 py-0.5">
+                                                    <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                                                    <span>Queried live ERP database</span>
+                                                </div>
+                                            </template>
 
                                             <!-- Create Draft PO Tool (Purchasing only) -->
                                             <template x-if="(t.tool === 'createDraftPurchaseOrder' || t.tool === 'create_draft_purchase_order') && currentUser.role === 'purchasing' && t.output?.allowed !== false">
@@ -156,10 +166,6 @@
                                                     </template>
                                                 </div>
                                             </template>
-                                        </div>
-                                    </template>
-                                </div>
-                            </template>
                                         </div>
                                     </template>
                                 </div>
