@@ -98,8 +98,6 @@
                         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                         <span>Full Access: Landed Cost & PO Creation Enabled</span>
                     </span>
-                    <span class="text-slate-500">|</span>
-                    <span class="font-mono text-slate-400">Model: Google Gemini | Agent: AI Agent </span>
                 </div>
             </div>
 
@@ -124,13 +122,6 @@
                                 <div class="mt-2.5 pt-2 border-t border-slate-800/80">
                                     <template x-for="(t, idx) in msg.tools" :key="idx">
                                         <div class="mb-2">
-                                            <!-- Execute SQL: live DB query badge (hiding raw SQL) -->
-                                            <template x-if="t.tool === 'execute_sql' || t.tool === 'executeSql'">
-                                                <div class="text-[11px] text-emerald-400 font-mono flex items-center space-x-1.5 py-0.5">
-                                                    <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-                                                    <span>Queried live ERP database</span>
-                                                </div>
-                                            </template>
 
                                             <!-- Create Draft PO Tool -->
                                             <template x-if="t.tool === 'createDraftPurchaseOrder' || t.tool === 'create_draft_purchase_order'">
@@ -171,7 +162,7 @@
                             </template>
 
                             <!-- Interactive Quick Confirm Button for Pending Drafts -->
-                            <template x-if="msg.text && (msg.text.toLowerCase().includes('confirm') || msg.text.toLowerCase().includes('save it'))">
+                            <template x-if="isDraftAwaitingConfirmation(msg)">
                                 <div class="mt-3 pt-2.5 border-t border-slate-800 flex items-center space-x-2">
                                     <button @click="sendPrompt('confirm')" class="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center space-x-1.5 shadow transition">
                                         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
@@ -367,23 +358,47 @@
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-slate-800">
-                            <template x-for="log in logsList" :key="log.id">
+                            <!-- Loading Row -->
+                            <tr x-show="isLoadingLogs">
+                                <td colspan="7" class="p-8 text-center text-slate-400">
+                                    <div class="flex items-center justify-center space-x-2 text-xs">
+                                        <span class="h-2 w-2 rounded-full bg-amber-400 animate-ping"></span>
+                                        <span>Loading assistant audit logs...</span>
+                                    </div>
+                                </td>
+                            </tr>
+
+                            <!-- Empty State Row -->
+                            <tr x-show="!isLoadingLogs && (!logsList || logsList.length === 0)">
+                                <td colspan="7" class="p-8 text-center text-slate-500">
+                                    <div class="flex flex-col items-center justify-center space-y-2">
+                                        <svg class="w-8 h-8 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                                        <span class="text-xs font-medium text-slate-400">No assistant audit logs found.</span>
+                                        <span class="text-[11px] text-slate-500">Ask the AI Assistant a question in the Chat tab to generate audit records.</span>
+                                    </div>
+                                </td>
+                            </tr>
+
+                            <!-- Logs Rows -->
+                            <template x-for="(log, idx) in (logsList || [])" :key="log.id || idx">
                                 <tr class="hover:bg-slate-800/40">
-                                    <td class="p-3 font-mono text-slate-400" x-text="new Date(log.created_at).toLocaleTimeString()"></td>
+                                    <td class="p-3 font-mono text-slate-400 whitespace-nowrap" x-text="formatLogTime(log.created_at)"></td>
                                     <td class="p-3">
-                                        <span class="font-medium text-slate-200" x-text="log.user ? log.user.name : 'Unknown'"></span>
-                                        <div class="text-[10px] text-slate-400 uppercase" x-text="log.user ? log.user.role : ''"></div>
+                                        <span class="font-medium text-slate-200" x-text="(log.user && log.user.name) ? log.user.name : (log.user_name || 'Staff Member')"></span>
+                                        <div class="text-[10px] text-slate-400 uppercase" x-text="(log.user && log.user.role) ? log.user.role : (log.role || '')"></div>
                                     </td>
-                                    <td class="p-3 font-medium text-amber-300" x-text="log.question"></td>
+                                    <td class="p-3 font-medium text-amber-300 max-w-xs" x-text="log.question"></td>
                                     <td class="p-3 font-mono text-[11px] text-emerald-400">
-                                        <template x-for="(t, ti) in (log.tools_called || [])" :key="ti">
-                                            <span class="px-1.5 py-0.5 rounded bg-slate-800 mr-1" x-text="t.tool"></span>
-                                        </template>
-                                        <span x-show="!log.tools_called || log.tools_called.length === 0" class="text-slate-500">None</span>
+                                        <div class="flex flex-wrap gap-1">
+                                            <template x-for="(toolName, ti) in formatLogTools(log.tools_called)" :key="ti">
+                                                <span class="px-1.5 py-0.5 rounded bg-slate-800 text-emerald-400 font-mono" x-text="toolName"></span>
+                                            </template>
+                                            <span x-show="!formatLogTools(log.tools_called).length" class="text-slate-500">None</span>
+                                        </div>
                                     </td>
-                                    <td class="p-3 text-slate-300 max-w-xs truncate" x-text="log.final_answer"></td>
-                                    <td class="p-3 font-mono text-amber-400" x-text="log.response_time_ms + 'ms'"></td>
-                                    <td class="p-3 font-mono text-slate-400" x-text="log.tokens_used"></td>
+                                    <td class="p-3 text-slate-300 max-w-sm truncate" :title="log.final_answer" x-text="log.final_answer"></td>
+                                    <td class="p-3 font-mono text-amber-400 whitespace-nowrap" x-text="(log.response_time_ms || 0) + 'ms'"></td>
+                                    <td class="p-3 font-mono text-slate-400 whitespace-nowrap" x-text="log.tokens_used || 0"></td>
                                 </tr>
                             </template>
                         </tbody>
@@ -417,6 +432,50 @@
                 inventoryList: [],
                 ordersList: [],
                 logsList: [],
+                isLoadingLogs: false,
+
+                isDraftAwaitingConfirmation(msg) {
+                    if (!msg || !msg.text) return false;
+                    const lower = msg.text.toLowerCase();
+                    // Do not show if already confirmed / successfully saved
+                    if (lower.includes('successfully confirmed') || lower.includes('has been confirmed') || lower.includes('has been successfully created and saved')) return false;
+
+                    // Check if tools called included create draft PO
+                    const hasDraftTool = msg.tools && msg.tools.some(t =>
+                        t.tool === 'createDraftPurchaseOrder' ||
+                        t.tool === 'create_draft_purchase_order' ||
+                        (t.output && t.output.status === 'draft_pending_confirmation')
+                    );
+
+                    // Check for explicit call to confirm the draft
+                    const asksConfirmation = /reply\s+["']?confirm["']?/i.test(msg.text) ||
+                                             /(reply "confirm" to save|reply 'confirm' to save|confirm to save)/i.test(msg.text);
+
+                    return hasDraftTool || asksConfirmation;
+                },
+
+                formatLogTools(tools) {
+                    if (!tools) return [];
+                    if (typeof tools === 'string') {
+                        try { tools = JSON.parse(tools); } catch (e) { return [tools]; }
+                    }
+                    if (!Array.isArray(tools)) return [];
+                    return tools.map(t => {
+                        if (!t) return '';
+                        if (typeof t === 'string') return t;
+                        return t.tool || t.name || JSON.stringify(t);
+                    }).filter(Boolean);
+                },
+
+                formatLogTime(ts) {
+                    if (!ts) return 'Just now';
+                    try {
+                        const d = new Date(ts);
+                        return isNaN(d.getTime()) ? ts : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                    } catch (e) {
+                        return ts;
+                    }
+                },
 
                 async init() {
                     await this.switchRole('sales');
@@ -556,13 +615,28 @@
                 },
 
                 async fetchLogs() {
+                    this.isLoadingLogs = true;
                     try {
+                        if (!this.authToken) {
+                            await this.switchRole(this.currentUser?.role || 'sales');
+                        }
                         const res = await fetch('/api/assistant/logs', {
                             headers: { 'Authorization': `Bearer ${this.authToken}`, 'Accept': 'application/json' }
                         });
                         const data = await res.json();
-                        this.logsList = data.data || [];
-                    } catch (e) { console.error(e); }
+                        if (Array.isArray(data)) {
+                            this.logsList = data;
+                        } else if (data && Array.isArray(data.data)) {
+                            this.logsList = data.data;
+                        } else {
+                            this.logsList = [];
+                        }
+                    } catch (e) {
+                        console.error('Failed to fetch assistant logs:', e);
+                        this.logsList = [];
+                    } finally {
+                        this.isLoadingLogs = false;
+                    }
                 }
             };
         }

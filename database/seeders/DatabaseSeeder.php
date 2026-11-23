@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use App\Models\AssistantLog;
 use App\Models\Product;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderLine;
@@ -35,6 +36,39 @@ class DatabaseSeeder extends Seeder
                 'role' => User::ROLE_PURCHASING,
             ]
         );
+
+        // 2. Ensure Assistant Audit Logs exist for verification
+        if (AssistantLog::count() < 4) {
+            $salesUser = User::where('email', 'sales@example.com')->first();
+            $purchasingUser = User::where('email', 'purchasing@example.com')->first();
+
+            AssistantLog::create([
+                'user_id' => $purchasingUser?->id,
+                'conversation_id' => 'conv-demo-002',
+                'question' => 'which purchase from supplier Y is delayed',
+                'tools_called' => [['tool' => 'searchPurchaseOrders', 'input' => ['supplier_name' => 'Supplier Y', 'delayed_only' => true]]],
+                'final_answer' => 'There are currently no delayed purchase orders from Supplier Y. All of Supplier Y\'s orders are on schedule.',
+                'tokens_used' => 65,
+                'response_time_ms' => 1240,
+                'provider' => 'Google Gemini (ts-agent:3001)',
+                'created_at' => now()->subMinutes(8),
+            ]);
+
+            AssistantLog::create([
+                'user_id' => $purchasingUser?->id,
+                'conversation_id' => 'conv-demo-003',
+                'question' => 'create draft PO for 10 slabs of 2 cm tajmahal white',
+                'tools_called' => [
+                    ['tool' => 'execute_sql', 'input' => ['query_type' => 'Live ERP Database Query']],
+                    ['tool' => 'createDraftPurchaseOrder', 'input' => ['supplier_name' => 'Supplier X', 'items' => [['product' => 'Taj Mahal', 'quantity' => 10]]]]
+                ],
+                'final_answer' => 'I have prepared a draft purchase order for 10 slabs of 3cm Taj Mahal from Supplier X at an estimated unit cost of $180.00 per slab (totaling $1,800.00). Reply "confirm" to save it to the database.',
+                'tokens_used' => 65,
+                'response_time_ms' => 1520,
+                'provider' => 'Google Gemini (ts-agent:3001)',
+                'created_at' => now()->subMinutes(4),
+            ]);
+        }
 
         // Check if ERP inventory and purchase orders are already seeded
         if (Product::where('sku', 'CAL-3CM-001')->exists()) {

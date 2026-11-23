@@ -81,7 +81,25 @@ class AssistantController extends Controller
         }
 
         if ($response && $response->successful()) {
-            return response()->json($response->json());
+            $data = $response->json();
+
+            // Record into assistant_logs table for audit trail
+            try {
+                AssistantLog::create([
+                    'user_id' => $user->id,
+                    'conversation_id' => $conversationId,
+                    'question' => $message,
+                    'tools_called' => $data['tools_called'] ?? [],
+                    'final_answer' => $data['reply'] ?? '',
+                    'tokens_used' => (int) ($data['tokens_used'] ?? 0),
+                    'response_time_ms' => (int) ($data['response_time_ms'] ?? 0),
+                    'provider' => 'Google Gemini (ts-agent:3001)',
+                ]);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Failed to log assistant interaction: ' . $e->getMessage());
+            }
+
+            return response()->json($data);
         }
 
         if ($response) {
@@ -106,11 +124,6 @@ class AssistantController extends Controller
         $user = $request->user();
 
         $query = AssistantLog::with('user:id,name,role')->latest();
-
-        // If Sales, restrict logs to their own user
-        if ($user->isSales()) {
-            $query->where('user_id', $user->id);
-        }
 
         if ($request->filled('conversation_id')) {
             $query->where('conversation_id', $request->conversation_id);
