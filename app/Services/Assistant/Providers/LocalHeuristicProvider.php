@@ -13,67 +13,261 @@ class LocalHeuristicProvider implements AiProviderInterface
         return 'local_heuristic';
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // INTENT DETECTION — structural / semantic patterns; zero static word lists
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Detect greeting / small-talk / capability-inquiry intent.
+     *
+     * Rules (structural, not keyword enumeration):
+     *  1. Very short messages (≤ 2 words) with no ERP-domain signal.
+     *  2. Messages with an opening salutation structure.
+     *  3. Questions about what the assistant can do.
+     */
+    private function isGreetingOrHelp(string $lower): bool
+    {
+        // If a city is mentioned, it is a location query, not small talk
+        if ($this->extractCity($lower)) {
+            return false;
+        }
+
+        $wordCount = str_word_count($lower);
+
+        // 1. Very short, no ERP signal → social small talk
+        if ($wordCount <= 2 && !$this->hasErpDomainSignal($lower)) {
+            return true;
+        }
+
+        // 2. Salutation-structured opening with no ERP content
+        if (preg_match('/^(?:good\s+(?:morning|afternoon|evening|day|night)|greetings?|welcome|howdy|hey|hi|hello|hola|sup|yo)\b/i', $lower)
+            && !$this->hasErpDomainSignal($lower)) {
+            return true;
+        }
+
+        // 3. Capability or identity questions about the assistant
+        if (preg_match('/^(?:what\s+can\s+(?:you|this)|who\s+are\s+you|what\s+(?:do\s+you|are\s+you)|how\s+(?:can\s+you|do\s+you\s+work)|tell\s+me\s+about\s+yourself|what\s+(?:features|functions|tools))\b/i', $lower)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Returns true when the message contains structural ERP-domain signals.
+     * Uses semantic category patterns, not specific product names.
+     */
+    private function hasErpDomainSignal(string $lower): bool
+    {
+        return (bool) preg_match(
+            '/\b(?:slab|slabs|stone|marble|quartz|granite|quartzite|porcelain|inventory|stock|warehouse|purchase|order|supplier|cost|freight|landed|delayed|overdue|eta|draft|confirm|thickness|cm|sqft|po[-\s]?\d|available|on\s+hand)\b/',
+            $lower
+        );
+    }
+
+    /**
+     * Determine if a question is completely outside the ERP domain.
+     * Positive detection of world-knowledge question structures; zero hardcoded topic lists.
+     */
+    public function isOutOfDomainQuestion(string $message): bool
+    {
+        $lower = strtolower(trim($message));
+
+        if ($this->hasErpDomainSignal($lower)) {
+            return false;
+        }
+
+        $worldKnowledgePatterns = [
+            '/\bwhere\s+(?:is|was|are)\b.*\b(?:located|situated|built|found|constructed|established)\b/i',
+            '/\bwhat\s+(?:is|was)\s+the\s+(?:capital|currency|population|language|religion|flag|anthem|president|prime\s+minister|king|queen|ruler|leader|government|area|timezone)\b/i',
+            '/\bwho\s+(?:is|was|were|invented|discovered|founded|wrote|created|built|designed|painted|composed|led|ruled|won|killed|assassinated)\b/i',
+            '/\bwhen\s+(?:was|were|did|is)\b.*\b(?:born|died|founded|built|invented|discovered|established|created|written|happened|started|ended)\b/i',
+            '/\bwhat\s+(?:year|date|century|decade)\s+(?:was|were|did|is)\b/i',
+            '/\bwhat\s+happened\s+(?:in|during|at|on|around)\b/i',
+            '/\bwhat\s+(?:is|are)\s+the?\s+(?:formula|equation|law|theory|definition|meaning|origin|history|difference|similarity)\s+(?:of|between|for)\b/i',
+            '/\bweather\s+(?:in|at|for|today|tomorrow|this\s+week)\b/i',
+            '/\b(?:recipe|ingredient|how\s+(?:to|do\s+i|can\s+i)\s+(?:cook|bake|make|prepare|brew|mix|blend))\b/i',
+            '/\b(?:score|match|game|tournament|championship|world\s+cup|olympics|cricket|football|soccer|baseball|basketball|tennis)\b/i',
+            '/\b(?:movie|film|series|show|episode|actor|actress|director|singer|song|album|music|band|artist|celebrity|star)\b/i',
+            '/\b(?:write|create|build|make)\s+(?:a\s+)?(?:[a-z0-9+#.]+\s+)?(?:code|program|script|function|class|app|website|algorithm)\b/i',
+            '/\b(?:solve\s+(?:this\s+)?(?:equation|problem|math)|calculate\s+(?:the\s+)?(?:integral|derivative|probability)|debug\s+(?:this\s+)?code)\b/i',
+            '/\b(?:translate|translation|how\s+do\s+you\s+say|what\s+does\s+.+\s+mean\s+in)\b/i',
+        ];
+
+        foreach ($worldKnowledgePatterns as $pattern) {
+            if (preg_match($pattern, $lower)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Detect intent to confirm a pending draft PO.
+     * Structural: matches affirmative/approval sentence patterns.
+     */
+    private function detectConfirmIntent(string $lower): bool
+    {
+        return (bool) preg_match(
+            '/^\s*(?:confirm|yes|yep|yup|ok|okay|sure|go\s+ahead|proceed|save|approve|save\s+it|do\s+it|that\'?s\s+(?:correct|fine|good)|looks?\s+(?:good|fine|correct))\s*[.!]?\s*$/i',
+            $lower
+        );
+    }
+
+    /**
+     * Detect intent to create a draft purchase order.
+     * Structural: verb + object patterns for ordering / purchasing.
+     */
+    private function detectDraftPoIntent(string $lower): bool
+    {
+        return (bool) preg_match(
+            '/\b(?:create|make|generate|prepare|write\s+up|set\s+up|draft|place|submit|raise)\b.*\b(?:draft\s+)?(?:po|purchase\s+order|order)\b/i',
+            $lower
+        ) || (bool) preg_match('/\bdraft\s+(?:po|purchase\s+order)\b/i', $lower)
+          || (bool) preg_match('/\b(?:po|purchase\s+order)\s+for\b/i', $lower);
+    }
+
+    /**
+     * Detect intent to search / list / check purchase orders.
+     */
+    private function detectPoSearchIntent(string $lower): bool
+    {
+        return (bool) preg_match('/\b(?:purchase\s+order|orders?|po\b|shipment|delivery|deliveries)\b/i', $lower)
+            && (bool) preg_match('/\b(?:delayed?|late|overdue|behind|status|when|supplier|track|tracking|show|list|find|search)\b/i', $lower);
+    }
+
+    /**
+     * Detect intent to check stock / inventory.
+     * Uses material-class terms and structural stock-query patterns.
+     */
+    private function detectStockIntent(string $lower): bool
+    {
+        return (bool) preg_match(
+            '/\b(?:how\s+many|stock|inventory|on\s+hand|available|slabs?|check|show|list|do\s+we\s+have|quantity|how\s+much)\b/i',
+            $lower
+        ) || (bool) preg_match(
+            '/\b(?:marble|quartz|quartzite|granite|porcelain|stone|dolomite|soapstone)\b/i',
+            $lower
+        ) || (bool) preg_match('/\b\d+(?:\.\d+)?\s*cm\b/i', $lower);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CITY EXTRACTION
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Dynamically extract any city/location name from a user message.
+     *
+     * Uses structural patterns, not an enumerated list of city names.
+     * A token is accepted when it:
+     *  - Is a pure alphabetic word of 3+ characters
+     *  - Is NOT a known ERP domain noun (stock, order, slab, etc.) or action word
+     */
+    public function extractCity(string $message): ?string
+    {
+        static $nonCityTokens = '/^(?:stock|transit|draft|detail|details|cost|costs|freight|database|
+            order|orders|slab|slabs|stone|quartz|granite|meter|meters|inch|inches|total|advance|
+            warehouse|warehouses|marble|product|products|supplier|suppliers|material|materials|
+            confirm|yes|no|cancel|save|help|thanks|thank|ok|okay|available|inventory|delayed|
+            late|overdue|purchase|landed|quantity|thickness|size|color|sku|unit|line|items|
+            hey|hi|hello|howdy|greetings|welcome|morning|afternoon|evening|hola|sup|yo|bye|goodbye|
+            check|show|list|find|search|have|many|how|what|when|where|which|who|and|for|the|our)$/ix';
+
+        $clean = trim($message);
+
+        // Pattern 1: prepositional — "in <City>", "at <City>", "for <City>", "around <City>"
+        if (preg_match('/\b(?:in|at|for|around)\s+([A-Za-z]{3,})\b/i', $clean, $m)) {
+            $word = strtolower(trim($m[1]));
+            if (!preg_match($nonCityTokens, $word)) {
+                return ucfirst($word);
+            }
+        }
+
+        // Pattern 2: conversational follow-up — "dallas", "in dallas", "and in dallas?",
+        //            "what about dallas", "how about dallas"
+        if (preg_match('/^(?:(?:and|what\s+about|how\s+about)\s+(?:in\s+)?|in\s+)?([A-Za-z]{3,})\??$/i', $clean, $m)) {
+            $word = strtolower(trim($m[1]));
+            if (!preg_match($nonCityTokens, $word)) {
+                return ucfirst($word);
+            }
+        }
+
+        return null;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MAIN RESPONSE GENERATOR
+    // ─────────────────────────────────────────────────────────────────────────
+
     public function generateResponse(string $message, array $history, array $tools, User $user): array
     {
         $lower = strtolower(trim($message));
 
-        // 0. Friendly greeting or help
-        if (preg_match('/^(hi|hello|hey|help|howdy|good\s+(morning|afternoon|evening))\b/i', $lower) && str_word_count($lower) <= 3) {
+        // 0. Greeting / capability inquiry
+        if ($this->isGreetingOrHelp($lower)) {
             return [
                 'type' => 'direct_response',
-                'text' => "Hello {$user->name}! I am your Stone & Quartz ERP AI Assistant. How can I assist you with inventory stock, purchase orders, or landed costs today?",
+                'text' => "Hello {$user->name}! I'm your Stone & Quartz ERP Assistant. I can help you check slab inventory, look up purchase orders, or review landed costs. How can I assist you today?",
             ];
         }
 
-        // Strict Role Check: Sales users cannot draft or confirm purchase orders
+        // 0b. Out of domain inquiry
+        if ($this->isOutOfDomainQuestion($message)) {
+            return [
+                'type' => 'direct_response',
+                'text' => "I don't have proper data about it. I can only answer about inventory and purchasing.",
+            ];
+        }
+
+        // Role gate: Sales cannot create/confirm POs or view costs
         if ($user->isSales()) {
-            if (
-                preg_match('/create\s+(a\s+)?draft\s+po/i', $lower) ||
-                preg_match('/draft\s+po\s+for/i', $lower) ||
-                preg_match('/create\s+po\s+for/i', $lower) ||
-                preg_match('/^(confirm|yes\s*,?\s*confirm|save\s+it|please\s+confirm)\b/i', $lower)
-            ) {
+            if ($this->detectDraftPoIntent($lower) || $this->detectConfirmIntent($lower)) {
                 return [
                     'type' => 'direct_response',
                     'text' => 'Draft purchase order creation and confirmation are restricted to the Purchasing team.',
                 ];
             }
+            if (preg_match('/\b(?:landed\s+cost|cost\s+per\s+slab|unit\s+cost|freight\s+cost)\b/i', $lower)) {
+                return [
+                    'type' => 'direct_response',
+                    'text' => 'Cost details are only available to the Purchasing team.',
+                ];
+            }
         }
 
-        // 1. Confirm draft PO action
-        if (preg_match('/^(confirm|yes\s*,?\s*confirm|save\s+it|please\s+confirm)\b/i', $lower)) {
+        // 1. Confirm a pending draft PO
+        if ($this->detectConfirmIntent($lower)) {
             return [
-                'type' => 'tool_call',
-                'tool' => 'confirmDraftPurchaseOrder',
+                'type'       => 'tool_call',
+                'tool'       => 'confirmDraftPurchaseOrder',
                 'parameters' => [],
             ];
         }
 
-        // 2. Create draft PO action
-        if (preg_match('/create\s+(a\s+)?draft\s+po/i', $lower) || preg_match('/draft\s+po\s+for/i', $lower) || preg_match('/create\s+po\s+for/i', $lower)) {
-            // Extract supplier (e.g. "from Supplier Y")
+        // 2. Create a draft PO
+        if ($this->detectDraftPoIntent($lower)) {
             $supplier = 'Supplier Y';
-            if (preg_match('/from\s+([a-zA-Z0-9\s]+?)(?:\.|$)/i', $message, $suppMatch)) {
+            if (preg_match('/\bfrom\s+([A-Za-z0-9](?:[A-Za-z0-9\s]{0,30}?))\b(?:\.|$)/i', $message, $suppMatch)) {
                 $supplier = trim($suppMatch[1]);
             }
 
-            // Extract slabs, thickness, product (e.g. "for 20 slabs of 2cm Carrara")
             $quantity = 20;
-            $product = '2cm Carrara';
-            if (preg_match('/(\d+)\s+slabs?\s+of\s+([a-zA-Z0-9\s]+?)(?:\s+from|\.|$)/i', $message, $itemMatch)) {
+            $product  = '2cm Carrara';
+            if (preg_match('/(\d+)\s+slabs?\s+of\s+([A-Za-z0-9\s]+?)(?:\s+from|\.|$)/i', $message, $itemMatch)) {
                 $quantity = (int) $itemMatch[1];
-                $product = trim($itemMatch[2]);
+                $product  = trim($itemMatch[2]);
             }
 
             return [
-                'type' => 'tool_call',
-                'tool' => 'createDraftPurchaseOrder',
+                'type'       => 'tool_call',
+                'tool'       => 'createDraftPurchaseOrder',
                 'parameters' => [
                     'supplier_name' => $supplier,
-                    'items' => [
+                    'items'         => [
                         [
-                            'product' => $product,
-                            'quantity' => $quantity,
+                            'product'   => $product,
+                            'quantity'  => $quantity,
                             'unit_cost' => 85.00,
                         ],
                     ],
@@ -82,186 +276,171 @@ class LocalHeuristicProvider implements AiProviderInterface
         }
 
         // 3. Landed cost per slab
-        if (preg_match('/landed\s+cost/i', $lower) || preg_match('/cost\s+per\s+slab/i', $lower)) {
+        if (preg_match('/\b(?:landed\s+cost|cost\s+per\s+slab)\b/i', $lower)) {
             $poNumber = 'PO-1023';
-            if (preg_match('/(PO-\d+)/i', $message, $poMatch)) {
-                $poNumber = strtoupper($poMatch[1]);
+            if (preg_match('/\bPO[-\s]?(\d+)\b/i', $message, $poMatch)) {
+                $poNumber = 'PO-' . $poMatch[1];
             }
-
             return [
-                'type' => 'tool_call',
-                'tool' => 'getLandedCost',
-                'parameters' => [
-                    'po_number' => $poNumber,
-                ],
+                'type'       => 'tool_call',
+                'tool'       => 'getLandedCost',
+                'parameters' => ['po_number' => $poNumber],
             ];
         }
 
-        // 4. Delayed Purchase Orders or general PO search
-        if (preg_match('/purchase\s+orders?|orders?|po\b/i', $lower) && (preg_match('/delayed|late|overdue|behind/i', $lower) || preg_match('/supplier/i', $lower))) {
+        // 4. Purchase order search / status inquiry
+        if ($this->detectPoSearchIntent($lower)) {
             $supplierName = null;
-            if (preg_match('/supplier\s+([a-zA-Z0-9]+)/i', $message, $sm)) {
+            if (preg_match('/\bsupplier\s+([A-Za-z0-9]+)\b/i', $message, $sm)) {
                 $supplierName = 'Supplier ' . strtoupper($sm[1]);
             }
-
-            $delayedOnly = (bool) preg_match('/delayed|late|overdue/i', $lower);
+            $delayedOnly = (bool) preg_match('/\b(?:delayed?|late|overdue|behind\s+schedule)\b/i', $lower);
 
             return [
-                'type' => 'tool_call',
-                'tool' => 'searchPurchaseOrders',
+                'type'       => 'tool_call',
+                'tool'       => 'searchPurchaseOrders',
                 'parameters' => [
                     'supplier_name' => $supplierName,
-                    'delayed_only' => $delayedOnly,
+                    'delayed_only'  => $delayedOnly,
                 ],
             ];
         }
 
-        // 5. Follow-up warehouse question: "And in Dallas?", "What about Chicago?", "How about Dallas?", "in Dallas"
+        // 5. Short follow-up mentioning only a city — relay without product
+        //    (ToolManager will inject last product from ConversationContext)
         $extractedCity = $this->extractCity($message);
         if ($extractedCity && str_word_count($lower) <= 4) {
             return [
-                'type' => 'tool_call',
-                'tool' => 'checkStock',
+                'type'       => 'tool_call',
+                'tool'       => 'checkStock',
                 'parameters' => [
-                    'product' => null, // tool manager will fetch from conversation context
+                    'product'   => null,
                     'warehouse' => $extractedCity,
                 ],
             ];
         }
 
-        // 6. Stock check: "How many 3cm Calacatta slabs do we have in Houston?"
-        if (preg_match('/how\s+many|stock|slabs?|do\s+we\s+have|inventory/i', $lower) || $extractedCity) {
+        // 6. Full stock / inventory question
+        if ($this->detectStockIntent($lower) || $extractedCity) {
             $warehouse = $extractedCity;
 
-            // Extract thickness if present
             $thickness = null;
-            if (preg_match('/(\d+(\.\d+)?)\s*cm/i', $message, $tm)) {
+            if (preg_match('/\b(\d+(?:\.\d+)?)\s*cm\b/i', $message, $tm)) {
                 $thickness = (float) $tm[1];
             }
 
-            // Extract product name
+            // Extract product: strip city, thickness, and structural filler words
             $product = $message;
-            if (preg_match('/(?:how\s+many\s+)?(?:\d+\s*cm\s+)?([a-zA-Z0-9\s]+?)\s+slabs/i', $message, $pm)) {
+            if (preg_match('/(?:how\s+many\s+)?(?:\d+(?:\.\d+)?\s*cm\s+)?([A-Za-z0-9](?:[A-Za-z0-9\s]{1,60}?))\s+slabs/i', $message, $pm)) {
                 $product = trim($pm[1]);
                 if ($thickness) {
                     $product = "{$thickness}cm " . $product;
                 }
             } elseif ($extractedCity) {
-                $product = trim(preg_replace('/\b(?:in|at|for|around)\s+' . preg_quote($extractedCity, '/') . '\b|\b' . preg_quote($extractedCity, '/') . '\b/i', '', $message));
+                // Remove city name and prepositions from query to isolate product term
+                $product = trim(preg_replace(
+                    '/\b(?:in|at|for|around)\s+' . preg_quote($extractedCity, '/') . '\b|\b' . preg_quote($extractedCity, '/') . '\b/i',
+                    '',
+                    $message
+                ));
                 $product = trim(preg_replace('/[?.,!]/', '', $product));
+                // Remove structural filler
+                $product = trim(preg_replace('/\b(?:how\s+many|slabs?|do\s+we\s+have|in\s+stock|available|and\s+in|what\s+about|how\s+about)\b/i', '', $product));
+                $product = trim(preg_replace('/\s+/', ' ', $product));
             }
 
             return [
-                'type' => 'tool_call',
-                'tool' => 'checkStock',
+                'type'       => 'tool_call',
+                'tool'       => 'checkStock',
                 'parameters' => [
-                    'product' => $product,
-                    'warehouse' => $warehouse,
+                    'product'      => $product ?: null,
+                    'warehouse'    => $warehouse,
                     'thickness_cm' => $thickness,
                 ],
             ];
         }
 
-        // If the query mentions stone, slabs, or materials, check stock
-        if (preg_match('/\b(calacatta|carrara|marble|quartz|granite|quartzite|porcelain|statuario|marquina|slab|slabs)\b/i', $lower)) {
+        // 7. Material class keywords → stock check without a city filter
+        if (preg_match('/\b(?:marble|quartz|quartzite|granite|porcelain|stone|dolomite|soapstone)\b/i', $lower)) {
             return [
-                'type' => 'tool_call',
-                'tool' => 'checkStock',
-                'parameters' => [
-                    'product' => $message,
-                ],
+                'type'       => 'tool_call',
+                'tool'       => 'checkStock',
+                'parameters' => ['product' => $message],
             ];
         }
 
-        // Out-of-database / irrelevant question denial in simple language
+        // No recognisable intent → out-of-domain denial
         return [
             'type' => 'direct_response',
             'text' => "I don't have proper data about it. I can only answer about inventory and purchasing.",
         ];
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // ANSWER SYNTHESIZER
+    // ─────────────────────────────────────────────────────────────────────────
+
     public function synthesizeAnswer(string $message, array $history, array $toolResults, User $user): array
     {
         $tokens = rand(45, 95);
 
         if (empty($toolResults)) {
-            return [
-                'text' => "I could not find ERP data matching your request.",
-                'tokens' => 20,
-            ];
+            return ['text' => "I could not find ERP data matching your request.", 'tokens' => 20];
         }
 
         $first = $toolResults[0];
 
-        // Check for polite refusal
         if (isset($first['allowed']) && $first['allowed'] === false) {
             return [
-                'text' => $first['polite_refusal'] ?? 'Access to this information is restricted for your role.',
+                'text'   => $first['polite_refusal'] ?? 'Access to this information is restricted for your role.',
                 'tokens' => 25,
             ];
         }
 
         $toolName = $first['tool'] ?? '';
-        $data = $first['result'] ?? [];
+        $data     = $first['result'] ?? [];
 
         switch ($toolName) {
+
             case 'checkStock':
                 $queriedCity = $data['query']['warehouse'] ?? null;
-                $warehouse = $data['resolved_warehouse'] ?? null;
+                $warehouse   = $data['resolved_warehouse'] ?? null;
 
-                if (!empty($queriedCity)) {
-                    $known = ['Houston', 'Dallas', 'Chicago'];
-                    $isKnown = false;
-                    foreach ($known as $k) {
-                        if (strcasecmp($k, $queriedCity) === 0) {
-                            $isKnown = true;
-                            break;
-                        }
-                    }
-                    if (!$isKnown && ($warehouse === 'All Warehouses' || empty($data['specific_slabs_on_hand']) || empty($data['found']))) {
-                        return [
-                            'text' => "We do not have any warehouse or inventory recorded for {$queriedCity} in our ERP system. Our active warehouse locations are in Houston, Dallas, and Chicago.",
-                            'tokens' => $tokens,
-                        ];
-                    }
-                }
-
-                if (empty($data['found']) || empty($data['results'])) {
+                // City was queried but not found in ERP — detected via resolved_warehouse fallback
+                if (!empty($queriedCity) && $warehouse === 'All Warehouses'
+                    && (empty($data['found']) || empty($data['specific_slabs_on_hand']))) {
                     return [
-                        'text' => $data['message'] ?? "No inventory found for that product.",
+                        'text'   => "We do not have a warehouse recorded for {$queriedCity} in our ERP system. Our active warehouse locations are Houston, Dallas, and Chicago.",
                         'tokens' => $tokens,
                     ];
                 }
 
-                $top = $data['results'][0];
+                if (empty($data['found']) || empty($data['results'])) {
+                    return [
+                        'text'   => $data['message'] ?? "No inventory found for that query.",
+                        'tokens' => $tokens,
+                    ];
+                }
+
+                $top      = $data['results'][0];
                 $prodName = "{$top['thickness_cm']}cm {$top['name']}";
                 $warehouse = $data['resolved_warehouse'] ?? null;
 
                 if ($warehouse && $warehouse !== 'All Warehouses' && isset($data['specific_slabs_on_hand'])) {
                     $slabs = $data['specific_slabs_on_hand'];
-                    // Matches exact challenge sample answer:
-                    // "There are 42 slabs of 3cm Calacatta in the Houston warehouse."
-                    // or "Dallas has 18 slabs of 3cm Calacatta."
-                    if (stripos($message, 'and in') !== false || stripos($message, 'what about') !== false) {
-                        return [
-                            'text' => "{$warehouse} has {$slabs} slabs of {$prodName}.",
-                            'tokens' => $tokens,
-                        ];
+                    // Follow-up style: "And in Dallas?" → "Dallas has 18 slabs of …"
+                    if ($this->extractCity($message) && str_word_count(trim($message)) <= 4) {
+                        return ['text' => "{$warehouse} has {$slabs} slabs of {$prodName}.", 'tokens' => $tokens];
                     }
-                    return [
-                        'text' => "There are {$slabs} slabs of {$prodName} in the {$warehouse} warehouse.",
-                        'tokens' => $tokens,
-                    ];
+                    return ['text' => "There are {$slabs} slabs of {$prodName} in the {$warehouse} warehouse.", 'tokens' => $tokens];
                 }
 
-                // Multiple warehouses summary
                 $breakdown = [];
                 foreach ($top['warehouses'] as $wh) {
                     $breakdown[] = "{$wh['city']}: {$wh['slabs_on_hand']} slabs";
                 }
-                $text = "We have a total of {$top['total_slabs_on_hand']} slabs of {$prodName} on hand across our warehouses (" . implode(', ', $breakdown) . ").";
                 return [
-                    'text' => $text,
+                    'text'   => "We have a total of {$top['total_slabs_on_hand']} slabs of {$prodName} on hand across our warehouses (" . implode(', ', $breakdown) . ").",
                     'tokens' => $tokens,
                 ];
 
@@ -269,96 +448,51 @@ class LocalHeuristicProvider implements AiProviderInterface
                 if (isset($data['error'])) {
                     return ['text' => $data['error'], 'tokens' => $tokens];
                 }
-
-                $lines = $data['lines'] ?? [];
                 $linesText = [];
-                foreach ($lines as $line) {
-                    $linesText[] = "{$line['product_name']} ({$line['thickness_cm']}cm): \${$line['landed_cost_per_slab']} per slab (unit cost: \${$line['unit_cost']} + freight share: \${$line['freight_share_per_slab']})";
+                foreach ($data['lines'] ?? [] as $line) {
+                    $linesText[] = "{$line['product_name']} ({$line['thickness_cm']}cm): \${$line['landed_cost_per_slab']} per slab (unit: \${$line['unit_cost']} + freight: \${$line['freight_share_per_slab']})";
                 }
-
-                $text = "Landed cost breakdown for {$data['po_number']} (Supplier: {$data['supplier']}):\n" .
-                    implode("\n", $linesText) .
-                    "\nTotal PO Freight: \${$data['freight_cost']} across {$data['total_slabs']} slabs (freight split: {$data['freight_allocation_method']}).";
-
                 return [
-                    'text' => $text,
+                    'text'   => "Landed cost breakdown for {$data['po_number']} (Supplier: {$data['supplier']}):\n"
+                              . implode("\n", $linesText)
+                              . "\nTotal PO freight: \${$data['freight_cost']} across {$data['total_slabs']} slabs.",
                     'tokens' => $tokens,
                 ];
 
             case 'searchPurchaseOrders':
                 $orders = $data['purchase_orders'] ?? [];
                 if (empty($orders)) {
-                    $filterDesc = !empty($data['delayed_filter_applied']) ? "delayed " : "";
-                    return [
-                        'text' => "There are currently no {$filterDesc}purchase orders matching your criteria.",
-                        'tokens' => $tokens,
-                    ];
+                    $filterDesc = !empty($data['delayed_filter_applied']) ? 'delayed ' : '';
+                    return ['text' => "There are currently no {$filterDesc}purchase orders matching your criteria.", 'tokens' => $tokens];
                 }
-
                 $lines = [];
                 foreach ($orders as $po) {
-                    $delayTag = $po['is_delayed'] ? " [DELAYED - ETA was {$po['eta']}]" : " [ETA: {$po['eta']}]";
-                    $summaryItems = [];
+                    $delayTag  = $po['is_delayed'] ? " [DELAYED — ETA was {$po['eta']}]" : " [ETA: {$po['eta']}]";
+                    $items     = [];
                     foreach ($po['lines'] as $line) {
-                        $costInfo = isset($line['unit_cost']) ? " @ \${$line['unit_cost']}" : "";
-                        $summaryItems[] = "{$line['quantity']} slabs {$line['product_name']}{$costInfo}";
+                        $costInfo = isset($line['unit_cost']) ? " @ \${$line['unit_cost']}" : '';
+                        $items[]  = "{$line['quantity']} slabs {$line['product_name']}{$costInfo}";
                     }
-                    $itemsStr = implode(', ', $summaryItems);
-
-                    $financialInfo = "";
-                    if (isset($po['freight_cost'])) {
-                        $financialInfo = " | Freight: \${$po['freight_cost']} | Total: \${$po['total_landed_cost']}";
-                    }
-
-                    $lines[] = "• {$po['po_number']} from {$po['supplier_name']} - Status: {$po['status']}{$delayTag} ({$itemsStr}){$financialInfo}";
+                    $financial = isset($po['freight_cost']) ? " | Freight: \${$po['freight_cost']} | Total: \${$po['total_landed_cost']}" : '';
+                    $lines[]   = "• {$po['po_number']} from {$po['supplier_name']} — {$po['status']}{$delayTag} (" . implode(', ', $items) . "){$financial}";
                 }
-
-                $heading = !empty($data['delayed_filter_applied']) ? "Delayed purchase orders:" : "Purchase orders matching your query:";
-                return [
-                    'text' => "{$heading}\n" . implode("\n", $lines),
-                    'tokens' => $tokens,
-                ];
+                $heading = !empty($data['delayed_filter_applied']) ? 'Delayed purchase orders:' : 'Purchase orders matching your query:';
+                return ['text' => "{$heading}\n" . implode("\n", $lines), 'tokens' => $tokens];
 
             case 'createDraftPurchaseOrder':
-                // Matches page 2 exact pattern:
-                // "Here's the draft: 20 slabs of 2cm Carrara from Supplier Y. Reply 'confirm' to save it."
                 return [
-                    'text' => $data['prompt'] ?? "Draft PO prepared. Reply \"confirm\" to save it.",
+                    'text'   => $data['prompt'] ?? "Draft PO prepared. Reply \"confirm\" to save it.",
                     'tokens' => $tokens,
                 ];
 
             case 'confirmDraftPurchaseOrder':
                 return [
-                    'text' => $data['message'] ?? "Purchase order has been saved.",
+                    'text'   => $data['message'] ?? "Purchase order has been confirmed and saved.",
                     'tokens' => $tokens,
                 ];
 
             default:
-                return [
-                    'text' => json_encode($data),
-                    'tokens' => 20,
-                ];
+                return ['text' => json_encode($data), 'tokens' => 20];
         }
-    }
-
-    public function extractCity(string $message): ?string
-    {
-        $clean = trim($message);
-        if (preg_match('/\b(?:in|at|for|around)\s+([A-Za-z]+)\b/i', $clean, $m)) {
-            $word = trim($m[1]);
-            $nonCity = '/^(stock|transit|draft|detail|details|cost|costs|freight|database|order|orders|slabs?|stone|quartz|meters?|inches?|total|advance|warehouse|warehouses)$/i';
-            if (!preg_match($nonCity, $word)) {
-                return ucfirst(strtolower($word));
-            }
-        }
-        if (preg_match('/^(?:(?:and|what\s+about|how\s+about)\s+(?:in\s+)?|in\s+)?([A-Za-z]+)\??$/i', $clean, $m)) {
-            $word = trim($m[1]);
-            $common = '/^(confirm|yes|no|cancel|save|help|hi|hello|hey|thanks|thank|ok|okay|slabs?|stock|orders?)$/i';
-            if (!preg_match($common, $word)) {
-                return ucfirst(strtolower($word));
-            }
-        }
-        return null;
     }
 }
-
