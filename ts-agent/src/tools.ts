@@ -24,12 +24,12 @@ export class ToolExecutor {
       },
       {
         name: 'checkStock',
-        description: 'Check slabs on hand for a stone/quartz product in a warehouse (Houston, Dallas, Chicago).',
+        description: 'Check slabs on hand for a stone/quartz product in a warehouse across any city or location (e.g. Houston, Dallas, Chicago, or any queried city).',
         parameters: {
           type: 'object',
           properties: {
             product: { type: 'string', description: 'Product name or thickness (e.g. "3cm Calacatta", "Carrara"). Optional.' },
-            warehouse: { type: 'string', description: 'City name (e.g. "Houston", "Dallas", "Chicago").' },
+            warehouse: { type: 'string', description: 'City name of the warehouse (e.g. "Houston", "Dallas", "Chicago", or any queried location).' },
             thickness_cm: { type: 'number', description: 'Slab thickness in cm (e.g. 2 or 3).' },
           },
         },

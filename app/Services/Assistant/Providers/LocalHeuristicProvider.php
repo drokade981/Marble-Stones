@@ -116,25 +116,22 @@ class LocalHeuristicProvider implements AiProviderInterface
             ];
         }
 
-        // 5. Follow-up warehouse question: "And in Dallas?", "What about Chicago?", "How about Dallas?"
-        if (preg_match('/^(and|what\s+about|how\s+about)\s+(in\s+)?(houston|dallas|chicago)\??$/i', $lower, $fm)) {
-            $city = ucfirst(strtolower($fm[3]));
+        // 5. Follow-up warehouse question: "And in Dallas?", "What about Chicago?", "How about Dallas?", "in Dallas"
+        $extractedCity = $this->extractCity($message);
+        if ($extractedCity && str_word_count($lower) <= 4) {
             return [
                 'type' => 'tool_call',
                 'tool' => 'checkStock',
                 'parameters' => [
                     'product' => null, // tool manager will fetch from conversation context
-                    'warehouse' => $city,
+                    'warehouse' => $extractedCity,
                 ],
             ];
         }
 
         // 6. Stock check: "How many 3cm Calacatta slabs do we have in Houston?"
-        if (preg_match('/how\s+many|stock|slabs?|do\s+we\s+have|inventory/i', $lower)) {
-            $warehouse = null;
-            if (preg_match('/\b(in|at)\s+(houston|dallas|chicago)\b/i', $message, $wm)) {
-                $warehouse = ucfirst(strtolower($wm[2]));
-            }
+        if (preg_match('/how\s+many|stock|slabs?|do\s+we\s+have|inventory/i', $lower) || $extractedCity) {
+            $warehouse = $extractedCity;
 
             // Extract thickness if present
             $thickness = null;
@@ -149,6 +146,9 @@ class LocalHeuristicProvider implements AiProviderInterface
                 if ($thickness) {
                     $product = "{$thickness}cm " . $product;
                 }
+            } elseif ($extractedCity) {
+                $product = trim(preg_replace('/\b(?:in|at|for|around)\s+' . preg_quote($extractedCity, '/') . '\b|\b' . preg_quote($extractedCity, '/') . '\b/i', '', $message));
+                $product = trim(preg_replace('/[?.,!]/', '', $product));
             }
 
             return [
@@ -206,6 +206,26 @@ class LocalHeuristicProvider implements AiProviderInterface
 
         switch ($toolName) {
             case 'checkStock':
+                $queriedCity = $data['query']['warehouse'] ?? null;
+                $warehouse = $data['resolved_warehouse'] ?? null;
+
+                if (!empty($queriedCity)) {
+                    $known = ['Houston', 'Dallas', 'Chicago'];
+                    $isKnown = false;
+                    foreach ($known as $k) {
+                        if (strcasecmp($k, $queriedCity) === 0) {
+                            $isKnown = true;
+                            break;
+                        }
+                    }
+                    if (!$isKnown && ($warehouse === 'All Warehouses' || empty($data['specific_slabs_on_hand']) || empty($data['found']))) {
+                        return [
+                            'text' => "We do not have any warehouse or inventory recorded for {$queriedCity} in our ERP system. Our active warehouse locations are in Houston, Dallas, and Chicago.",
+                            'tokens' => $tokens,
+                        ];
+                    }
+                }
+
                 if (empty($data['found']) || empty($data['results'])) {
                     return [
                         'text' => $data['message'] ?? "No inventory found for that product.",
@@ -319,6 +339,26 @@ class LocalHeuristicProvider implements AiProviderInterface
                     'tokens' => 20,
                 ];
         }
+    }
+
+    public function extractCity(string $message): ?string
+    {
+        $clean = trim($message);
+        if (preg_match('/\b(?:in|at|for|around)\s+([A-Za-z]+)\b/i', $clean, $m)) {
+            $word = trim($m[1]);
+            $nonCity = '/^(stock|transit|draft|detail|details|cost|costs|freight|database|order|orders|slabs?|stone|quartz|meters?|inches?|total|advance|warehouse|warehouses)$/i';
+            if (!preg_match($nonCity, $word)) {
+                return ucfirst(strtolower($word));
+            }
+        }
+        if (preg_match('/^(?:(?:and|what\s+about|how\s+about)\s+(?:in\s+)?|in\s+)?([A-Za-z]+)\??$/i', $clean, $m)) {
+            $word = trim($m[1]);
+            $common = '/^(confirm|yes|no|cancel|save|help|hi|hello|hey|thanks|thank|ok|okay|slabs?|stock|orders?)$/i';
+            if (!preg_match($common, $word)) {
+                return ucfirst(strtolower($word));
+            }
+        }
+        return null;
     }
 }
 

@@ -36,16 +36,83 @@ function extractCleanText(content: any): string {
   return '';
 }
 
+/**
+ * Dynamically extract any city/location mentioned in the user query.
+ * Matches patterns like "in Dallas", "at Chicago", "in Houston", "in Bhopal", "for Atlanta",
+ * or short follow-ups like "dallas", "and in dallas", "what about houston".
+ */
+export function extractCity(message: string): string | undefined {
+  const clean = message.trim();
+
+  // 1. Matches "in <City>", "at <City>", "for <City>"
+  const prepMatch = clean.match(/\b(?:in|at|for|around)\s+([A-Za-z]+)\b/i);
+  if (prepMatch) {
+    const word = prepMatch[1].trim();
+    const nonCityWords = /^(stock|transit|draft|detail|details|cost|costs|freight|database|order|orders|slabs?|stone|quartz|meters?|inches?|total|advance|warehouse|warehouses)$/i;
+    if (!nonCityWords.test(word)) {
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    }
+  }
+
+  // 2. Matches short contextual follow-up phrases like "Dallas", "in Dallas", "and in Dallas?", "what about Dallas", "how about Dallas"
+  const followUpMatch = clean.match(/^(?:(?:and|what\s+about|how\s+about)\s+(?:in\s+)?|in\s+)?([A-Za-z]+)\??$/i);
+  if (followUpMatch) {
+    const word = followUpMatch[1].trim();
+    const commonActions = /^(confirm|yes|no|cancel|save|help|hi|hello|hey|thanks|thank|ok|okay|slabs?|stock|orders?)$/i;
+    if (!commonActions.test(word)) {
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Dynamically checks if the message is a conversational greeting, capability inquiry, or polite small talk.
+ */
+export function isGreetingOrHelp(message: string): boolean {
+  const lower = message.trim().toLowerCase().replace(/[!?.,]/g, '');
+  const words = lower.split(/\s+/);
+  if (words.length <= 5) {
+    if (/^(hi|hello|hey|howdy|greetings|good\s*(morning|afternoon|evening|day)|welcome|help)\b/i.test(lower)) {
+      return true;
+    }
+    if (/^(what\s+can\s+you\s+do|who\s+are\s+you|what\s+do\s+you\s+do|help\s+me)\b/i.test(lower)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Dynamically checks if the query is strictly out-of-domain (world trivia, monuments, presidents, general coding).
+ */
+export function isOutOfDomainQuestion(message: string): boolean {
+  const lower = message.trim().toLowerCase();
+  const offTopicPatterns = /\b(qutub\s*minar|taj\s*mahal\s*located|capital\s+of|president\s+of|prime\s+minister|who\s+(was|is)\s+(the\s+)?[a-z]+|where\s+is\s+(the\s+)?[a-z\s]+(located|situated|built)|weather\s+in|recipe|cricket|football|movie|song|actor|actress|poem|solve\s+math|write\s+code\s+for)\b/i;
+  return offTopicPatterns.test(lower);
+}
+
 function isRelevantToDatabase(message: string, session: SessionState): boolean {
   const lower = message.trim().toLowerCase();
+
+  // Explicit off-topic check
+  if (isOutOfDomainQuestion(message)) {
+    return false;
+  }
+
+  // Greetings and capability inquiries
+  if (isGreetingOrHelp(message)) {
+    return true;
+  }
 
   // Active draft PO awaiting confirmation
   if (session.pendingDraftToken && /^(confirm|yes|save|cancel|no)\b/i.test(lower)) {
     return true;
   }
 
-  // Follow-up warehouse inquiry (e.g. "in dallas", "and in dallas", "dallas", "what about houston")
-  if (/(houston|dallas|chicago)/i.test(lower)) {
+  // Any city or warehouse inquiry (dynamic, not restricted to specific cities)
+  if (extractCity(message)) {
     return true;
   }
 
@@ -55,15 +122,8 @@ function isRelevantToDatabase(message: string, session: SessionState): boolean {
   }
 
   // Stone, quartz, inventory, warehouse, purchase orders, costs keywords
-  const erpPattern = /\b(slab|slabs|stone|quartz|marble|granite|quartzite|porcelain|calacatta|carrara|marquina|statuario|bianco|taj\s*mahal|thickness|2cm|3cm|sqft|inventory|stock|warehouse|warehouses|houston|dallas|chicago|supplier|suppliers|purchase\s+order|purchase\s+orders|po[- ]?\d+|draft\s+po|create\s+draft|delayed|late|overdue|eta|freight|landed\s+cost|unit\s+cost|cost\s+per\s+slab|on\s+hand|available)\b/i;
+  const erpPattern = /\b(slab|slabs|stone|quartz|marble|granite|quartzite|porcelain|calacatta|carrara|marquina|statuario|bianco|taj\s*mahal|thickness|2cm|3cm|sqft|inventory|stock|warehouse|warehouses|supplier|suppliers|purchase\s+order|purchase\s+orders|po[- ]?\d+|draft\s+po|create\s+draft|delayed|late|overdue|eta|freight|landed\s+cost|unit\s+cost|cost\s+per\s+slab|on\s+hand|available)\b/i;
   if (erpPattern.test(lower)) {
-    return true;
-  }
-
-  // Polite greetings and questions about the assistant's capabilities
-  const greetingOrHelpPattern = /^(hi|hello|hey|help|howdy|greetings|good\s+(morning|afternoon|evening))\b/i;
-  const capabilityPattern = /\b(what\s+can\s+you\s+do|who\s+are\s+you|what\s+do\s+you\s+do|help\s+me)\b/i;
-  if (greetingOrHelpPattern.test(lower) || capabilityPattern.test(lower)) {
     return true;
   }
 
@@ -117,7 +177,7 @@ export class AssistantAgent {
       },
       {
         name: 'execute_sql',
-        description: 'Execute a read-only MySQL SELECT query against the ERP database to fetch live data (ChatGPT / Claude style Text-to-SQL). Use this to query products, slabs on hand, warehouses, suppliers, purchase orders, delayed shipments, or landed costs.',
+        description: 'Execute a read-only MySQL SELECT query against the ERP database to fetch live data (ChatGPT / Claude style Text-to-SQL). Use this to query products, slabs on hand, warehouses (by any city), suppliers, purchase orders, delayed shipments, or landed costs.',
         schema: z.object({
           sql: z.string().describe('MySQL SELECT statement to execute against the laravel_erp database.'),
         }),
@@ -142,10 +202,10 @@ export class AssistantAgent {
       },
       {
         name: 'check_stock',
-        description: 'Check slabs on hand for a stone or quartz product across warehouses (Houston, Dallas, Chicago). Returns real inventory quantities.',
+        description: 'Check slabs on hand for a stone or quartz product across warehouses in any city or location. Returns real inventory quantities.',
         schema: z.object({
           product: z.string().optional().describe('Product name, material, or color (e.g. "Calacatta Gold", "Carrara White", "Calacatta"). Can be omitted if checking all slabs or following up on previous product.'),
-          warehouse: z.string().optional().describe('Warehouse city name (e.g. "Houston", "Dallas", "Chicago")'),
+          warehouse: z.string().optional().describe('Warehouse city name (e.g. "Houston", "Dallas", "Chicago", or any city mentioned by the user)'),
           thickness_cm: z.number().optional().describe('Slab thickness in cm (e.g. 2 or 3)'),
         }),
       }
@@ -268,14 +328,14 @@ export class AssistantAgent {
     const session = this.getSession(conversationId);
     const lower = message.trim().toLowerCase();
 
-    // Contextual extraction: track thickness and warehouse mentions across turns
+    // Contextual extraction: dynamically track thickness and warehouse/city mentions across turns
     const tm = lower.match(/\b([23])\s*cm\b/i);
     if (tm) {
       session.lastThickness = parseInt(tm[1], 10);
     }
-    const wm = lower.match(/\b(houston|dallas|chicago)\b/i);
-    if (wm) {
-      session.lastWarehouse = wm[1].charAt(0).toUpperCase() + wm[1].slice(1).toLowerCase();
+    const cityDetected = extractCity(message);
+    if (cityDetected) {
+      session.lastWarehouse = cityDetected;
     }
 
     // Prompt injection security guard
@@ -330,7 +390,10 @@ DATABASE SCHEMA (MySQL database: laravel_erp):
    - Other materials: 'Quartz', 'Quartzite', 'Granite', 'Dolomite', 'Soapstone'
 
 2. \`warehouses\` (id, name, city)
-   - Cities: 'Houston', 'Dallas', 'Chicago'
+   - Active warehouse locations in DB: 'Houston', 'Dallas', 'Chicago'.
+   - IMPORTANT: The user can ask about ANY city or location (e.g. Houston, Dallas, Chicago, Bhopal, Atlanta, Denver, etc.).
+   - Dynamically check the database for the requested city. If the city does NOT exist in the ERP database, inform the user:
+     "We do not have any warehouse or inventory recorded for [City] in our ERP system. Our active warehouse locations are in Houston, Dallas, and Chicago."
 
 3. \`stock\` (id, product_id, warehouse_id, slabs_on_hand)
    - Tracks slabs on hand per product per warehouse.
@@ -379,12 +442,13 @@ HOW TO OPERATE LIKE CHATGPT / CLAUDE TEXT-TO-SQL:
    3. In SQL queries for Sales, NEVER select or include freight_cost, unit_cost, or bank_details, and NEVER select draft purchase orders (status = 'draft'). Any query violating this will be rejected.` : '- Purchasing role: Full access to all columns, landed costs, freight, and drafting POs.'}
 
 5. OUT-OF-DATABASE QUESTIONS (MANDATORY DENIAL):
-   - If the user asks ANY question not relevant to our stone & quartz ERP database (e.g. world capitals, general trivia, history, programming, cities not in our ERP like "bhopal", etc.), YOU MUST DENY THE ANSWER in simple language:
-   "I don't have proper data about it. I can only answer about inventory and purchasing."
-   - Do NOT execute queries for non-ERP questions and never provide outside world facts.
+   - If the user asks ANY general trivia question completely outside stone & quartz ERP operations (e.g. world capitals, historical monuments like "where is Qutub Minar located", presidents, recipes, sports, coding):
+     YOU MUST DENY THE ANSWER in simple language:
+     "I don't have proper data about it. I can only answer about inventory and purchasing."
+   - Do NOT answer general world trivia or off-topic questions.
 
 6. CONVERSATIONAL CONTEXT & CHECKPOINTER MEMORY:
-   - Use checkpointer memory to track the conversation context across turns (e.g. remembering 2cm thickness or a specific product across follow-ups like "in dallas").`;
+   - Use checkpointer memory to track conversation context across turns. For example, if the user asks about 2cm slabs in Bhopal, and then follows up with "in Dallas", remember the 2cm slab context and query the Dallas warehouse inventory.`;
 
         const llmWithTools = this.llm.bindTools(tools);
 
@@ -613,45 +677,38 @@ HOW TO OPERATE LIKE CHATGPT / CLAUDE TEXT-TO-SQL:
       }
       const delayedOnly = /delayed|late|overdue/i.test(lower);
       toolParams = { supplier_name: supplierName, delayed_only: delayedOnly };
-    } else if (/(houston|dallas|chicago)/i.test(lower)) {
+    } else if (extractCity(message) || /slabs?|stock|inventory|calacatta|carrara|marble|quartz|granite|quartzite/i.test(lower)) {
       toolName = 'checkStock';
-      const m = lower.match(/(houston|dallas|chicago)/i);
-      const city = m ? m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase() : 'Dallas';
-      let prod = session.lastProduct || '';
-      let thick = session.lastThickness;
-      const tm = lower.match(/\b([23])\s*cm\b/i);
-      if (tm) thick = parseInt(tm[1], 10);
-      toolParams = {
-        product: prod,
-        warehouse: city,
-        thickness_cm: thick,
-      };
-    } else if (/slabs?|stock|inventory|calacatta|carrara|marble|quartz/i.test(lower)) {
-      toolName = 'checkStock';
-      const cleanMsg = message.replace(/[?.,!]/g, ' ');
-      let warehouse: string | undefined = undefined;
-      const wm = cleanMsg.match(/\b(in|at)\s+(houston|dallas|chicago)\b/i);
-      if (wm) {
-        warehouse = wm[2].charAt(0).toUpperCase() + wm[2].slice(1).toLowerCase();
-      }
-
-      let product = cleanMsg.replace(/(how many|slabs?|do we have|in stock|stock|available|in\s+(houston|dallas|chicago))/gi, '').trim();
-      product = product.replace(/\s+/g, ' ').trim();
-      if (!product || product.length < 3) {
-        product = session.lastProduct || '';
+      const city = extractCity(message) || session.lastWarehouse;
+      if (city) {
+        session.lastWarehouse = city;
       }
 
       let thickness = session.lastThickness;
-      const tm = product.match(/\b([23])\s*cm\b/i);
+      const tm = lower.match(/\b([23])\s*cm\b/i);
       if (tm) {
         thickness = parseInt(tm[1], 10);
+        session.lastThickness = thickness;
       }
 
-      toolParams = { product, warehouse, thickness_cm: thickness };
+      let cleanMsg = message.replace(/[?.,!]/g, ' ');
+      if (city) {
+        const cityRegex = new RegExp(`\\b(?:in|at|for|around)\\s+${city}\\b|\\b${city}\\b`, 'gi');
+        cleanMsg = cleanMsg.replace(cityRegex, ' ');
+      }
+      let product = cleanMsg.replace(/(how many|slabs?|do we have|in stock|stock|available|and in|what about|how about)/gi, '').trim();
+      product = product.replace(/\s+/g, ' ').trim();
+      if (!product || product.length < 3) {
+        product = session.lastProduct || '';
+      } else {
+        session.lastProduct = product;
+      }
+
+      toolParams = { product: product || undefined, warehouse: city, thickness_cm: thickness };
     }
 
     if (!toolName) {
-      if (/^(hi|hello|hey|help|howdy|good\s+(morning|afternoon|evening))\b/i.test(lower)) {
+      if (isGreetingOrHelp(message)) {
         return {
           conversation_id: conversationId,
           role: user.role,
@@ -718,10 +775,20 @@ HOW TO OPERATE LIKE CHATGPT / CLAUDE TEXT-TO-SQL:
       }
       case 'checkStock': {
         const results = data.results || [];
+        const whCity = data.resolved_warehouse || 'the warehouse';
+
+        // Check if a specific city was queried that does not exist in our ERP
+        if (params.warehouse) {
+          const knownWarehouses = ['Houston', 'Dallas', 'Chicago'];
+          const isKnown = knownWarehouses.some(k => k.toLowerCase() === params.warehouse.toLowerCase());
+          if (!isKnown && (whCity === 'All Warehouses' || results.length === 0 || data.found === false)) {
+            return `We do not have any warehouse or inventory recorded for ${params.warehouse} in our ERP system. Our active warehouse locations are in Houston, Dallas, and Chicago.`;
+          }
+        }
+
         if (results.length === 0) {
           return data.message || `No products found matching '${params.product || 'inventory query'}'.`;
         }
-        const whCity = data.resolved_warehouse || 'the warehouse';
         if (results.length === 1) {
           const top = results[0];
           const prodName = `${top.thickness_cm}cm ${top.name}`;
