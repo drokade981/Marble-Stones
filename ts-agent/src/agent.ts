@@ -951,7 +951,7 @@ Use conversation history to maintain context across turns:
         // City queried but not found in ERP — detected via resolved_warehouse fallback
         if (params.warehouse) {
           if (whCity === 'All Warehouses' && (data.found === false || results.length === 0 || data.specific_slabs_on_hand == null)) {
-            return `We do not have a warehouse recorded for ${params.warehouse} in our ERP system. Our active warehouse locations are Houston, Dallas, and Chicago.`;
+            return `We do not have a warehouse recorded for ${params.warehouse} in our ERP system.`;
           }
         }
 
