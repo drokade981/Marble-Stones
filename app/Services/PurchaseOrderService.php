@@ -6,8 +6,10 @@ use App\Models\DraftPurchaseOrder;
 use App\Models\Product;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderLine;
+use App\Models\Stock;
 use App\Models\Supplier;
 use App\Models\User;
+use App\Models\Warehouse;
 use Carbon\Carbon;
 use Illuminate\Support\Str;
 
@@ -120,7 +122,7 @@ class PurchaseOrderService
      * Create a pending draft PO without committing it to the database yet.
      * Enforces confirm-before-save pattern.
      */
-    public function createDraft(User $user, string $supplierName, array $items, float $estimatedFreight = 0.0): array
+    public function createDraft(User $user, string $supplierName, array $items, float $estimatedFreight = 0.0, ?string $warehouse = null): array
     {
         if (!$user->isPurchasing()) {
             return [
@@ -129,12 +131,38 @@ class PurchaseOrderService
             ];
         }
 
-        // Find supplier (or fallback to default system supplier if unspecified)
-        $supplier = null;
-        if (!empty($supplierName)) {
-            $supplier = Supplier::where('name', 'like', "%{$supplierName}%")->first();
+        // Check if requested warehouse city is available
+        $resolvedWarehouse = null;
+        if (!empty($warehouse)) {
+            $cleanWh = trim($warehouse);
+            $resolvedWarehouse = Warehouse::where('city', 'like', "%{$cleanWh}%")
+                ->orWhere('name', 'like', "%{$cleanWh}%")
+                ->first();
+
+            if (!$resolvedWarehouse) {
+                $activeCities = Warehouse::pluck('city')->filter()->unique()->values()->implode(', ');
+                return [
+                    'status' => 'error',
+                    'warehouse_available' => false,
+                    'message' => "We do not have a warehouse available in {$cleanWh}. Our active warehouse locations are: {$activeCities}.",
+                ];
+            }
         }
-        if (!$supplier) {
+
+        // Find supplier — if a supplier name was provided, verify it exists in DB
+        $supplier = null;
+        if (!empty(trim($supplierName))) {
+            $cleanSupplier = trim($supplierName);
+            $supplier = Supplier::where('name', 'like', "%{$cleanSupplier}%")->first();
+            if (!$supplier) {
+                $availableSuppliers = Supplier::pluck('name')->implode(', ');
+                return [
+                    'status' => 'error',
+                    'supplier_available' => false,
+                    'message' => "Supplier '{$cleanSupplier}' does not exist in our ERP database. Available suppliers are: {$availableSuppliers}.",
+                ];
+            }
+        } else {
             $supplier = Supplier::first();
         }
 
@@ -145,9 +173,10 @@ class PurchaseOrderService
             ];
         }
 
-        // Process items
+        // Process items and check product/marble availability
         $resolvedItems = [];
         $itemDescriptions = [];
+        $totalSlabs = 0;
 
         foreach ($items as $item) {
             $productIdentifier = $item['product_name_or_sku'] ?? $item['product'] ?? '';
@@ -175,33 +204,42 @@ class PurchaseOrderService
             }
 
             if (!$product) {
-                // Auto-create or resolve custom product entry so drafting custom orders succeeds
-                $cleanSku = 'CUST-' . strtoupper(substr(preg_replace('/[^a-zA-Z0-9]/', '', $productIdentifier), 0, 8)) . '-' . (int) ($thickness ?? 2) . 'CM';
-                $product = Product::firstOrCreate(
-                    ['sku' => $cleanSku],
-                    [
-                        'name' => trim(preg_replace('/(\d+(\.\d+)?)\s*cm/i', '', $productIdentifier)),
-                        'material' => 'Natural Stone',
-                        'color' => 'Custom',
-                        'thickness_cm' => $thickness ?? 2.0,
-                        'slab_size' => '126x63 in',
-                    ]
-                );
+                $availableProducts = Product::limit(6)->pluck('name')->implode(', ');
+                return [
+                    'status' => 'error',
+                    'product_available' => false,
+                    'message' => "'{$productIdentifier}' is not available in our ERP product catalog. Available stone & marble products include: {$availableProducts}.",
+                ];
             }
 
+            $stockQuery = Stock::where('product_id', $product->id);
+            if ($resolvedWarehouse) {
+                $stockQuery->where('warehouse_id', $resolvedWarehouse->id);
+            }
+            $availableSlabs = (int) $stockQuery->sum('slabs_on_hand');
+
             $qty = (int) ($item['quantity'] ?? 1);
+            $totalSlabs += $qty;
             $unitCost = (float) ($item['unit_cost'] ?? 100.00); // Standard default or provided
 
             $resolvedItems[] = [
                 'product_id' => $product->id,
                 'sku' => $product->sku,
                 'name' => $product->name,
+                'material' => $product->material,
                 'thickness_cm' => $product->thickness_cm,
                 'quantity' => $qty,
                 'unit_cost' => $unitCost,
+                'available_slabs_on_hand' => $availableSlabs,
             ];
 
-            $itemDescriptions[] = "{$qty} slabs of {$product->thickness_cm}cm {$product->name}";
+            $whLabel = $resolvedWarehouse ? " in {$resolvedWarehouse->city}" : '';
+            $itemDescriptions[] = "{$qty} slabs of {$product->thickness_cm}cm {$product->name} (current stock{$whLabel}: {$availableSlabs} slabs)";
+        }
+
+        // Ensure freight cost is never empty/zero on drafts
+        if ($estimatedFreight <= 0) {
+            $estimatedFreight = round(max(500.00, $totalSlabs * 25.00), 2);
         }
 
         $itemsSummary = implode(', ', $itemDescriptions);
@@ -226,12 +264,15 @@ class PurchaseOrderService
 
         return [
             'status' => 'draft_pending_confirmation',
+            'po_status' => 'draft',
             'draft_token' => $draftToken,
             'supplier' => $supplier->name,
+            'warehouse' => $resolvedWarehouse?->city,
+            'warehouse_available' => $resolvedWarehouse ? true : null,
             'summary' => $summary,
             'items' => $resolvedItems,
             'estimated_freight' => $estimatedFreight,
-            'prompt' => "Here's the draft: {$summary}. Reply \"confirm\" to save it.",
+            'prompt' => "Here's the draft (Status: DRAFT, Estimated Freight: \${$estimatedFreight}): {$summary}. Reply \"confirm\" to save and confirm it.",
         ];
     }
 

@@ -83,7 +83,7 @@ export class ErpClient {
     }
   }
 
-  async createDraftPO(token: string, payload: { supplier_name: string; items: any[]; estimated_freight?: number }) {
+  async createDraftPO(token: string, payload: { supplier_name: string; items: any[]; estimated_freight?: number; warehouse?: string }) {
     try {
       const response = await this.client(token).post('/api/tools/create-draft-po', payload);
       return response.data;

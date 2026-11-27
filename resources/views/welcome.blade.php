@@ -133,8 +133,8 @@
                                                 </div>
                                             </template>
 
-                                            <!-- Create Draft PO Tool (Purchasing only) -->
-                                            <template x-if="(t.tool === 'createDraftPurchaseOrder' || t.tool === 'create_draft_purchase_order') && currentUser.role === 'purchasing' && t.output?.allowed !== false">
+                                            <!-- Create Draft PO Tool (Purchasing only, when draft actually succeeded) -->
+                                            <template x-if="(t.tool === 'createDraftPurchaseOrder' || t.tool === 'create_draft_purchase_order') && currentUser.role === 'purchasing' && t.output?.status === 'draft_pending_confirmation'">
                                                 <div>
                                                     <div class="text-[11px] text-amber-300 font-mono flex items-center space-x-1.5 mb-1">
                                                         <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
@@ -333,7 +333,7 @@
                                             <div x-text="line.quantity + 'x ' + line.product + (line.unit_cost ? ' (@ $' + line.unit_cost + ')' : '')"></div>
                                         </template>
                                     </td>
-                                    <td class="p-3 font-mono text-emerald-400" x-show="currentUser.role === 'purchasing'" x-text="po.freight_cost ? '$' + po.freight_cost : '-'"></td>
+                                    <td class="p-3 font-mono text-emerald-400" x-show="currentUser.role === 'purchasing'" x-text="(po.freight_cost !== null && po.freight_cost !== undefined && Number(po.freight_cost) > 0) ? '$' + po.freight_cost : '-'"></td>
                                     <td class="p-3 font-mono font-bold text-slate-100" x-show="currentUser.role === 'purchasing'" x-text="po.total_cost ? '$' + po.total_cost : '-'"></td>
                                 </tr>
                             </template>
@@ -459,10 +459,10 @@
                     // Do not show if request was refused or restricted
                     if (lower.includes('restricted') || lower.includes('unable to') || lower.includes('not have permission') || lower.includes('cannot create')) return false;
 
-                    // Check if tools called included create draft PO with successful allowed status
+                    // Check if tools called included create draft PO with actual pending confirmation status
                     const hasDraftTool = msg.tools && msg.tools.some(t =>
                         (t.tool === 'createDraftPurchaseOrder' || t.tool === 'create_draft_purchase_order') &&
-                        t.output && t.output.allowed !== false && t.output.status !== 'forbidden'
+                        t.output && t.output.status === 'draft_pending_confirmation'
                     );
 
                     // Check for explicit call to confirm the draft

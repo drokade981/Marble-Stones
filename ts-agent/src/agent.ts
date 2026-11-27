@@ -87,25 +87,19 @@ export function extractCity(message: string): string | undefined {
  */
 export function isGreetingOrHelp(message: string): boolean {
   const lower = message.trim().toLowerCase().replace(/[!?.,]/g, '').trim();
-  const wordCount = lower.split(/\s+/).filter(Boolean).length;
 
   // If a city is mentioned, it is a location query, not small talk
   if (extractCity(message)) {
     return false;
   }
 
-  // 1. Very short with no ERP domain signals → treat as small talk / greeting
-  if (wordCount <= 2 && !hasErpDomainSignal(lower)) {
-    return true;
-  }
-
-  // 2. Questions about what the assistant can do (structural: "what can you ...", "who are you")
+  // 1. Questions about what the assistant can do (structural: "what can you ...", "who are you")
   if (/^(?:what\s+can\s+(?:you|this)|who\s+are\s+you|what\s+(?:do\s+you|are\s+you)|how\s+(?:can\s+you|do\s+you\s+work)|tell\s+me\s+about\s+yourself|help\s+me\s+(?:with\s+)?please?|what\s+(?:features|functions|tools))\b/.test(lower)) {
     return true;
   }
 
-  // 3. Salutation structure: starts with a social opener followed by nothing of ERP substance
-  if (/^(?:good\s+(?:morning|afternoon|evening|day|night)|greetings?|welcome|howdy|hey|hi|hello|hola|sup|yo)\b/.test(lower) && !hasErpDomainSignal(lower)) {
+  // 2. Salutation structure: starts with a social opener followed by nothing of ERP substance
+  if (/^(?:good\s+(?:morning|afternoon|evening|day|night)|greetings?|welcome|howdy|hey|hi|hello|hola|sup|yo|thanks|thank\s+you|bye|goodbye)\b/.test(lower) && !hasErpDomainSignal(lower)) {
     return true;
   }
 
@@ -284,31 +278,37 @@ export class AssistantAgent {
   }
 
   private sanitizeToolsCalled(toolsCalled: any[], role: string): any[] {
-    return (toolsCalled || [])
-      .filter((tc) => {
-        if (role === 'sales') {
-          const restricted = [
-            'createDraftPurchaseOrder',
-            'create_draft_purchase_order',
-            'confirmDraftPurchaseOrder',
-            'confirm_draft_purchase_order',
-            'getLandedCost',
-            'get_landed_cost',
-          ];
-          if (restricted.includes(tc.tool) || tc.output?.allowed === false) return false;
-        }
-        return true;
-      })
-      .map((tc) => {
-        if (tc.tool === 'execute_sql' || tc.tool === 'executeSql') {
-          return {
-            tool: 'execute_sql',
-            input: { query_type: 'Live ERP Database Query' },
-            output: { status: 'executed_internally' },
-          };
-        }
-        return tc;
-      });
+    let seenExecuteSql = false;
+    const result: any[] = [];
+
+    for (const tc of toolsCalled || []) {
+      if (role === 'sales') {
+        const restricted = [
+          'createDraftPurchaseOrder',
+          'create_draft_purchase_order',
+          'confirmDraftPurchaseOrder',
+          'confirm_draft_purchase_order',
+          'getLandedCost',
+          'get_landed_cost',
+        ];
+        if (restricted.includes(tc.tool) || tc.output?.allowed === false) continue;
+      }
+
+      if (tc.tool === 'execute_sql' || tc.tool === 'executeSql') {
+        if (seenExecuteSql) continue;
+        seenExecuteSql = true;
+        result.push({
+          tool: 'execute_sql',
+          input: { query_type: 'Live ERP Database Query' },
+          output: { status: 'executed_internally' },
+        });
+        continue;
+      }
+
+      result.push(tc);
+    }
+
+    return result;
   }
 
   async processMessage(
@@ -498,6 +498,7 @@ export class AssistantAgent {
         cleanMsg = cleanMsg.replace(new RegExp(`\\b(?:in|at|for|around)\\s+${city}\\b|\\b${city}\\b`, 'gi'), ' ');
       }
       cleanMsg = cleanMsg.replace(/\b(?:how\s+many|slabs?|do\s+we\s+have|in\s+stock|available|and\s+in|what\s+about|how\s+about)\b/gi, '');
+      cleanMsg = cleanMsg.replace(/\b\d+\s+(?:of\s+)?/gi, '');
       let product = cleanMsg.replace(/\s+/g, ' ').trim();
       if (!product || product.length < 3) {
         product = session.lastProduct || '';

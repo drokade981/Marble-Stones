@@ -1,7 +1,7 @@
 import { ChatGoogle } from '@langchain/google';
 import { tool } from '@langchain/core/tools';
 import { AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
-import { Annotation, END, MemorySaver, messagesStateReducer, START, StateGraph } from '@langchain/langgraph';
+import { Annotation, MemorySaver, messagesStateReducer, StateGraph } from '@langchain/langgraph';
 import z from 'zod';
 import { ErpClient, UserProfile } from './erpClient';
 
@@ -187,17 +187,20 @@ export function buildMultiAgentGraph(
       async (args) => JSON.stringify(args),
       {
         name: 'create_draft_purchase_order',
-        description: 'Prepare a draft purchase order and present it for confirmation. RESTRICTED TO PURCHASING TEAM.',
+        description:
+          'Prepare a draft purchase order (status = draft initially) and present it for confirmation. ' +
+          'Validates warehouse city availability, product/marble availability, and includes estimated_freight. RESTRICTED TO PURCHASING TEAM.',
         schema: z.object({
           supplier_name: z.string().describe('Supplier name as stated by the user.'),
+          warehouse: z.string().optional().describe('Warehouse city name if mentioned by the user (e.g. Houston, Dallas, Chicago).'),
           items: z.array(
             z.object({
-              product: z.string().describe('Product name or description.'),
+              product: z.string().describe('Product name or description (e.g. "2cm Carrara White", "Calacatta Gold").'),
               quantity: z.number().describe('Number of slabs.'),
               unit_cost: z.number().optional().describe('Unit cost per slab if known.'),
             })
           ).describe('Line items to include in the purchase order.'),
-          estimated_freight: z.number().optional().describe('Estimated freight cost if stated.'),
+          estimated_freight: z.number().optional().describe('Estimated freight cost in USD (defaults to $25/slab, min $500 if omitted).'),
         }),
       }
     );
@@ -292,10 +295,19 @@ export function buildMultiAgentGraph(
                 polite_refusal: 'Creating draft purchase orders is restricted to the Purchasing team.',
               };
             } else {
+              const totalSlabs = Array.isArray(args.items)
+                ? args.items.reduce((sum: number, it: any) => sum + (Number(it.quantity) || 0), 0)
+                : 0;
+              const freight =
+                args.estimated_freight && Number(args.estimated_freight) > 0
+                  ? Number(args.estimated_freight)
+                  : Math.max(500, totalSlabs * 25);
+
               result = await erpClient.createDraftPO(state.token, {
                 supplier_name: args.supplier_name,
+                warehouse: args.warehouse,
                 items: args.items,
-                estimated_freight: args.estimated_freight,
+                estimated_freight: freight,
               });
               if (result?.draft_token) {
                 ctx.pendingDraftToken = result.draft_token;
@@ -369,11 +381,13 @@ export function buildMultiAgentGraph(
           .join('\n');
 
         const routerPrompt = `You are the Supervisor Router in a LangGraph multi-agent ERP system for a US natural stone & quartz slab distributor.
-Analyze the user's latest message (and conversation history if it is a short follow-up like "And in Dallas?" or "confirm") and select EXACTLY ONE specialist agent node:
+Analyze the user's latest message and conversation history, then select EXACTLY ONE specialist agent node:
 
-1. inventory_agent — Slab inventory, stock counts, warehouse locations (any city), stone/quartz products, thickness, availability, or follow-up city/thickness queries.
-2. purchasing_agent — Purchase orders (POs), delayed/late orders, suppliers, landed costs, unit/freight costs, creating draft POs, or confirming a draft PO.
+1. inventory_agent — Slab inventory, stock counts, warehouse locations (any city), stone/quartz products, thickness, availability, or follow-up city/thickness stock queries.
+2. purchasing_agent — Purchase orders (POs), delayed/late orders, suppliers (e.g. Supplier X/Y, Apex Stone Imports, Verona Marble Co, Quarzo Surfaces LLC), landed costs, unit/freight costs, creating draft POs, confirming a draft PO, OR follow-up replies providing product, quantity/slabs, supplier, or warehouse to continue a Purchase Order workflow.
 3. general_agent — Greetings, small talk, capability questions ("what can you do"), or off-topic questions unrelated to stone inventory and purchasing.
+
+CRITICAL RULE: If the previous assistant message is asking for Purchase Order details (product, number of slabs/quantity, supplier, or warehouse), you MUST route the user's reply (such as "20 slabs pietra gold", "Apex Stone Imports", "Absolute Black", or "Houston") to purchasing_agent!
 
 ${recentHistory ? `Recent conversation:\n${recentHistory}\n` : ''}Latest user message: "${userText}"
 
@@ -404,7 +418,8 @@ Respond with ONLY one exact token: inventory_agent, purchasing_agent, or general
       helpers.detectConfirmIntent(lower) ||
       helpers.detectDraftPoIntent(lower) ||
       helpers.detectPoSearchIntent(lower) ||
-      /\b(?:landed\s+cost|cost\s+per\s+slab|unit\s+cost|freight\s+cost|po[-\s]?\d+)\b/i.test(lower)
+      /\b(?:landed\s+cost|cost\s+per\s+slab|unit\s+cost|freight\s+cost|po[-\s]?\d+|imports|surfaces|llc)\b/i.test(lower) ||
+      (state.nextAgent === 'purchasing_agent' && !/\b(?:how\s+many|in\s+stock|available)\b/i.test(lower))
     ) {
       return { nextAgent: 'purchasing_agent', sessionContext: updatedCtx };
     }
@@ -473,8 +488,23 @@ ${state.user.role === 'sales' ? '5. SALES ROLE: Never expose unit_cost, freight_
     }
   }
 
-  async function inventoryToolsNode(state: MultiAgentStateType): Promise<Partial<MultiAgentStateType>> {
-    return executeToolCallsForState(state, new Set(['check_stock', 'execute_sql']));
+  // ── Unified ToolNode: executes tool calls for the active agent ─────────────
+
+  async function toolNode(state: MultiAgentStateType): Promise<Partial<MultiAgentStateType>> {
+    const allowedByAgent =
+      state.nextAgent === 'inventory_agent'
+        ? new Set(['check_stock', 'execute_sql'])
+        : state.user.role === 'sales'
+          ? new Set(['search_purchase_orders', 'execute_sql'])
+          : new Set([
+              'search_purchase_orders',
+              'get_landed_cost',
+              'create_draft_purchase_order',
+              'confirm_draft_purchase_order',
+              'execute_sql',
+            ]);
+
+    return executeToolCallsForState(state, allowedByAgent);
   }
 
   // ── NODE 3: Purchasing Specialist Agent ────────────────────────────────────
@@ -508,16 +538,23 @@ ${state.user.role === 'sales' ? '5. SALES ROLE: Never expose unit_cost, freight_
     }
 
     try {
+      const canConfirmPending = Boolean(state.sessionContext.pendingDraftToken) && helpers.detectConfirmIntent(lower);
       const tools =
         state.user.role === 'sales'
           ? [makeSearchPurchaseOrdersTool(), makeExecuteSqlTool(state.user)]
-          : [
-              makeSearchPurchaseOrdersTool(),
-              makeGetLandedCostTool(),
-              makeCreateDraftPoTool(),
-              makeConfirmDraftPoTool(),
-              makeExecuteSqlTool(state.user),
-            ];
+          : canConfirmPending
+            ? [
+                makeConfirmDraftPoTool(),
+                makeSearchPurchaseOrdersTool(),
+                makeGetLandedCostTool(),
+                makeExecuteSqlTool(state.user),
+              ]
+            : [
+                makeSearchPurchaseOrdersTool(),
+                makeGetLandedCostTool(),
+                makeCreateDraftPoTool(),
+                makeExecuteSqlTool(state.user),
+              ];
 
       const llmWithTools = llm.bindTools(tools);
 
@@ -526,6 +563,8 @@ Logged-in staff: ${state.user.name} (Role: ${state.user.role}).
 Session context: lastPoNumber=${state.sessionContext.lastPoNumber || 'none'}, pendingDraftToken=${state.sessionContext.pendingDraftToken ? 'ACTIVE' : 'none'}.
 
 SCHEMA (laravel_erp):
+- \`warehouses\` (id, name, city) — Active locations: Houston, Dallas, Chicago.
+- \`stock\` (id, product_id, warehouse_id, slabs_on_hand)
 - \`suppliers\` (id, name, contact, payment_terms, bank_details)
 - \`purchase_orders\` (id, po_number, supplier_id, status ['confirmed','delayed','received','draft'], order_date, eta, freight_cost, notes)
 - \`purchase_order_lines\` (id, purchase_order_id, product_id, quantity, unit_cost)
@@ -540,8 +579,12 @@ ${
     : `PURCHASING ROLE WORKFLOW:
 - Use \`search_purchase_orders\` or \`execute_sql\` for PO status & delayed order inquiries.
 - Use \`get_landed_cost\` for landed cost per slab calculations.
-- When asked to create a draft PO: call \`create_draft_purchase_order\` (default unit_cost = 150.00 if unspecified, default supplier = 'Supplier Y' if unnamed), present the summary, and end ONLY that draft message with: Reply "confirm" to save it.
-- When the user confirms a pending draft: call \`confirm_draft_purchase_order\`.
+- When asked to create/order a PO:
+  1. If a city/warehouse is mentioned, pass \`warehouse\` to \`create_draft_purchase_order\` (or check \`warehouses\` table) to verify the warehouse exists in that city.
+  2. \`create_draft_purchase_order\` checks whether the requested marble/stone product is available in the catalog & current stock, and creates an unconfirmed DRAFT first (never auto-confirm!).
+  3. Always include \`estimated_freight\` (default $25/slab, min $500 if unspecified).
+  4. Present the draft summary (status: DRAFT, warehouse/product availability, supplier, items, quantity, estimated freight & cost) and end ONLY that draft message with: Reply "confirm" to save it.
+- When the user explicitly replies to confirm a pending draft: call \`confirm_draft_purchase_order\` to change its status to confirmed.
 - NEVER add "Reply confirm to save it" to PO search or landed cost responses.`
 }
 NEVER output raw SQL, table names, or column names in your response.`;
@@ -562,20 +605,6 @@ NEVER output raw SQL, table names, or column names in your response.`;
         finalReply: fb.reply,
       };
     }
-  }
-
-  async function purchasingToolsNode(state: MultiAgentStateType): Promise<Partial<MultiAgentStateType>> {
-    const allowed =
-      state.user.role === 'sales'
-        ? new Set(['search_purchase_orders', 'execute_sql'])
-        : new Set([
-            'search_purchase_orders',
-            'get_landed_cost',
-            'create_draft_purchase_order',
-            'confirm_draft_purchase_order',
-            'execute_sql',
-          ]);
-    return executeToolCallsForState(state, allowed);
   }
 
   // ── NODE 4: General / Boundary Guard Agent ─────────────────────────────────
@@ -660,54 +689,73 @@ NEVER output raw SQL, table names, or column names in your response.`;
 
   // ── Conditional Edge Functions ─────────────────────────────────────────────
 
-  function routeFromSupervisor(state: MultiAgentStateType): AgentRoute {
+  function routeFromModel(state: MultiAgentStateType): AgentRoute | '__end__' {
     return state.nextAgent || 'general_agent';
   }
 
-  function shouldContinueTools(toolsNodeName: 'inventory_tools' | 'purchasing_tools') {
-    return (state: MultiAgentStateType): string => {
-      const lastMsg = state.messages[state.messages.length - 1] as AIMessage | undefined;
-      if (
-        lastMsg &&
-        Array.isArray(lastMsg.tool_calls) &&
-        lastMsg.tool_calls.length > 0 &&
-        state.toolIterations < MAX_TOOL_ITERATIONS
-      ) {
-        return toolsNodeName;
-      }
-      return 'finalize';
-    };
+  function shouldContinue(state: MultiAgentStateType): 'tools' | 'finalize' | '__end__' {
+    const lastMsg = state.messages[state.messages.length - 1] as AIMessage | undefined;
+    if (
+      lastMsg &&
+      Array.isArray(lastMsg.tool_calls) &&
+      lastMsg.tool_calls.length > 0 &&
+      state.toolIterations < MAX_TOOL_ITERATIONS
+    ) {
+      return 'tools';
+    }
+    return 'finalize';
+  }
+
+  function shouldCallModel(
+    state: MultiAgentStateType
+  ): 'callModel' | 'inventory_agent' | 'purchasing_agent' | '__end__' {
+    if (state.toolIterations >= MAX_TOOL_ITERATIONS) {
+      return '__end__';
+    }
+    if (state.nextAgent === 'inventory_agent') {
+      return 'inventory_agent';
+    }
+    if (state.nextAgent === 'purchasing_agent') {
+      return 'purchasing_agent';
+    }
+    return 'callModel';
   }
 
   // ── Assemble & Compile LangGraph StateGraph ────────────────────────────────
 
-  const builder = new StateGraph(MultiAgentState)
-    .addNode('supervisor', supervisorNode)
+  const graph = new StateGraph(MultiAgentState)
+    .addNode('callModel', supervisorNode)
     .addNode('inventory_agent', inventoryAgentNode)
-    .addNode('inventory_tools', inventoryToolsNode)
     .addNode('purchasing_agent', purchasingAgentNode)
-    .addNode('purchasing_tools', purchasingToolsNode)
     .addNode('general_agent', generalAgentNode)
+    .addNode('tools', toolNode)
     .addNode('finalize', finalizeNode)
-    .addEdge(START, 'supervisor')
-    .addConditionalEdges('supervisor', routeFromSupervisor, {
+    .addEdge('__start__', 'callModel')
+    .addConditionalEdges('callModel', routeFromModel, {
       inventory_agent: 'inventory_agent',
       purchasing_agent: 'purchasing_agent',
       general_agent: 'general_agent',
+      __end__: '__end__',
     })
-    .addConditionalEdges('inventory_agent', shouldContinueTools('inventory_tools'), {
-      inventory_tools: 'inventory_tools',
+    .addConditionalEdges('inventory_agent', shouldContinue, {
+      tools: 'tools',
       finalize: 'finalize',
+      __end__: '__end__',
     })
-    .addEdge('inventory_tools', 'inventory_agent')
-    .addConditionalEdges('purchasing_agent', shouldContinueTools('purchasing_tools'), {
-      purchasing_tools: 'purchasing_tools',
+    .addConditionalEdges('purchasing_agent', shouldContinue, {
+      tools: 'tools',
       finalize: 'finalize',
+      __end__: '__end__',
     })
-    .addEdge('purchasing_tools', 'purchasing_agent')
+    .addConditionalEdges('tools', shouldCallModel, {
+      callModel: 'callModel',
+      inventory_agent: 'inventory_agent',
+      purchasing_agent: 'purchasing_agent',
+      __end__: '__end__',
+    })
     .addEdge('general_agent', 'finalize')
-    .addEdge('finalize', END);
+    .addEdge('finalize', '__end__');
 
-  return builder.compile({ checkpointer });
+  return graph.compile({ checkpointer });
 }
 

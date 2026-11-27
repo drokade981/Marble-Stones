@@ -32,20 +32,13 @@ class LocalHeuristicProvider implements AiProviderInterface
             return false;
         }
 
-        $wordCount = str_word_count($lower);
-
-        // 1. Very short, no ERP signal → social small talk
-        if ($wordCount <= 2 && !$this->hasErpDomainSignal($lower)) {
-            return true;
-        }
-
-        // 2. Salutation-structured opening with no ERP content
-        if (preg_match('/^(?:good\s+(?:morning|afternoon|evening|day|night)|greetings?|welcome|howdy|hey|hi|hello|hola|sup|yo)\b/i', $lower)
+        // 1. Salutation-structured opening with no ERP content
+        if (preg_match('/^(?:good\s+(?:morning|afternoon|evening|day|night)|greetings?|welcome|howdy|hey|hi|hello|hola|sup|yo|thanks|thank\s+you|bye|goodbye)\b/i', $lower)
             && !$this->hasErpDomainSignal($lower)) {
             return true;
         }
 
-        // 3. Capability or identity questions about the assistant
+        // 2. Capability or identity questions about the assistant
         if (preg_match('/^(?:what\s+can\s+(?:you|this)|who\s+are\s+you|what\s+(?:do\s+you|are\s+you)|how\s+(?:can\s+you|do\s+you\s+work)|tell\s+me\s+about\s+yourself|what\s+(?:features|functions|tools))\b/i', $lower)) {
             return true;
         }

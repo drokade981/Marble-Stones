@@ -207,7 +207,8 @@ class ToolController extends Controller
             $user,
             $request->validated('supplier_name'),
             $request->validated('items'),
-            (float) ($request->validated('estimated_freight') ?? 0.0)
+            (float) ($request->validated('estimated_freight') ?? 0.0),
+            $request->validated('warehouse')
         );
 
         return response()->json($result);

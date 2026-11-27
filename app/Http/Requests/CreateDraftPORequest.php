@@ -20,6 +20,7 @@ class CreateDraftPORequest extends FormRequest
             'items.*.quantity' => ['required', 'integer', 'min:1'],
             'items.*.unit_cost' => ['nullable', 'numeric', 'min:0'],
             'estimated_freight' => ['nullable', 'numeric', 'min:0'],
+            'warehouse' => ['nullable', 'string'],
         ];
     }
 }
