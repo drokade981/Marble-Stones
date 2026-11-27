@@ -1,39 +1,12 @@
 import { ChatGoogle } from '@langchain/google';
-import { tool } from '@langchain/core/tools';
-import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
+import { HumanMessage } from '@langchain/core/messages';
 import { MemorySaver } from '@langchain/langgraph';
-import z from 'zod';
 import { ErpClient, UserProfile } from './erpClient';
 import { ToolExecutor } from './tools';
+import { buildMultiAgentGraph, SessionContext } from './multiAgentGraph';
 
-interface SessionState {
-  lastProduct?: string;
-  lastWarehouse?: string;
-  lastThickness?: number;
-  lastPoNumber?: string;
-  pendingDraftToken?: string;
+interface SessionState extends SessionContext {
   history: Array<{ role: 'user' | 'assistant'; text: string }>;
-}
-
-function extractCleanText(content: any): string {
-  if (typeof content === 'string') {
-    return content.trim();
-  }
-  if (Array.isArray(content)) {
-    return content
-      .map((part: any) => {
-        if (typeof part === 'string') return part;
-        if (part && typeof part.text === 'string') return part.text;
-        return '';
-      })
-      .filter(Boolean)
-      .join('')
-      .trim();
-  }
-  if (content && typeof content.text === 'string') {
-    return content.text.trim();
-  }
-  return '';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -201,18 +174,22 @@ export function isOutOfDomainQuestion(message: string): boolean {
   return worldKnowledgePatterns.some(p => p.test(lower));
 }
 
+function isPromptInjection(lower: string): boolean {
+  return /\b(?:ignore\s+(?:all\s+)?(?:rules|instructions|above)|system\s+override|act\s+as\s+(?:admin|root|superuser|dba)|drop\s+(?:table|database)|delete\s+from|truncate\s+table|insert\s+into|update\s+\w+\s+set)\b/i.test(lower);
+}
+
 /**
  * Checks whether the message is relevant to the ERP system (inventory, POs, costs, suppliers).
  * Used as a final guardrail when the LLM produces an empty response.
  */
-function isRelevantToDatabase(message: string, session: SessionState): boolean {
+function isRelevantToDatabase(message: string, ctx: SessionContext, hasHistory: boolean): boolean {
   const lower = message.trim().toLowerCase();
 
   if (isOutOfDomainQuestion(message)) return false;
   if (isGreetingOrHelp(message)) return true;
 
   // Active draft awaiting confirmation
-  if (session.pendingDraftToken && /\b(?:confirm|yes|save|proceed|go\s+ahead|do\s+it|sure|approved?)\b/i.test(lower)) {
+  if (ctx.pendingDraftToken && /\b(?:confirm|yes|save|proceed|go\s+ahead|do\s+it|sure|approved?)\b/i.test(lower)) {
     return true;
   }
 
@@ -229,13 +206,13 @@ function isRelevantToDatabase(message: string, session: SessionState): boolean {
   if (/\bPO[-\s]?\d+\b/i.test(lower)) return true;
 
   // Short contextual follow-up with prior history
-  if (session.history.length > 0 && lower.split(/\s+/).filter(Boolean).length <= 4) return true;
+  if (hasHistory && lower.split(/\s+/).filter(Boolean).length <= 4) return true;
 
   return false;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ASSISTANT AGENT CLASS
+// ASSISTANT AGENT CLASS (LangGraph Multi-Agent Orchestrator)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class AssistantAgent {
@@ -243,10 +220,45 @@ export class AssistantAgent {
   private checkpointer: MemorySaver = new MemorySaver();
   private toolExecutor: ToolExecutor;
   private llm: ChatGoogle | null = null;
+  private graph: ReturnType<typeof buildMultiAgentGraph>;
 
   constructor(private erpClient: ErpClient) {
     this.toolExecutor = new ToolExecutor(erpClient);
     this.initLlm();
+    this.graph = buildMultiAgentGraph(
+      this.erpClient,
+      () => {
+        if (!this.llm) this.initLlm();
+        return this.llm;
+      },
+      this.checkpointer,
+      {
+        extractCity,
+        isGreetingOrHelp,
+        isOutOfDomainQuestion,
+        isRelevantToDatabase,
+        detectDraftPoIntent: (l) => this.detectDraftPoIntent(l),
+        detectConfirmIntent: (l) => this.detectConfirmIntent(l),
+        detectPoSearchIntent: (l) => this.detectPoSearchIntent(l),
+        detectStockIntent: (l) => this.detectStockIntent(l),
+        isPromptInjection,
+      },
+      async (msg, user, token, ctx) => {
+        const session: SessionState = { ...ctx, history: [] };
+        const res = await this.fallbackExecution(msg, user, token, session, 'graph-fallback', Date.now());
+        return {
+          reply: res.reply,
+          toolsCalled: res.tools_called,
+          updatedContext: {
+            lastProduct: session.lastProduct,
+            lastWarehouse: session.lastWarehouse,
+            lastThickness: session.lastThickness,
+            lastPoNumber: session.lastPoNumber,
+            pendingDraftToken: session.pendingDraftToken,
+          },
+        };
+      }
+    );
   }
 
   private initLlm() {
@@ -271,157 +283,32 @@ export class AssistantAgent {
     return this.sessions.get(conversationId)!;
   }
 
-  private createTools(user: UserProfile, token: string, session: SessionState, toolsCalled: any[]) {
-    const executeSql = tool(
-      async ({ sql }) => {
-        const result = await this.erpClient.executeSql(token, sql);
-        toolsCalled.push({ tool: 'execute_sql', input: { sql }, output: result });
-        return JSON.stringify(result);
-      },
-      {
-        name: 'execute_sql',
-        description:
-          'Execute a read-only MySQL SELECT query against the ERP database (ChatGPT / Claude style Text-to-SQL). ' +
-          'Use this to query products, slabs on hand, warehouses by any city name, suppliers, purchase orders, delayed shipments, or landed costs. ' +
-          'Always call this tool first when you need live data before answering.',
-        schema: z.object({
-          sql: z.string().describe('MySQL SELECT statement to execute against the laravel_erp database.'),
-        }),
-      }
-    );
-
-    const checkStock = tool(
-      async ({ product, warehouse, thickness_cm }) => {
-        const prod = product || session.lastProduct || '';
-        const thick = thickness_cm ?? session.lastThickness;
-        const wh = warehouse || session.lastWarehouse;
-        const result = await this.erpClient.checkStock(token, {
-          product: prod,
-          warehouse: wh,
-          thickness_cm: thick,
-        });
-        if (prod) session.lastProduct = prod;
-        if (thick) session.lastThickness = thick;
-        if (wh) session.lastWarehouse = wh;
-        toolsCalled.push({ tool: 'checkStock', input: { product: prod, warehouse: wh, thickness_cm: thick }, output: result });
-        return JSON.stringify(result);
-      },
-      {
-        name: 'check_stock',
-        description:
-          'Check live slab inventory for any stone or quartz product. ' +
-          'The warehouse parameter accepts any city name the user mentions — the backend will resolve it against the ERP database. ' +
-          'If the city has no warehouse in the ERP, the response will indicate that.',
-        schema: z.object({
-          product: z.string().optional().describe(
-            'Product name, material, or color the user asked about (e.g. "Calacatta Gold", "Carrara White"). ' +
-            'Omit to reuse the previously mentioned product.'
-          ),
-          warehouse: z.string().optional().describe(
-            'Any city name the user mentioned as a warehouse location. The backend resolves it against the ERP database.'
-          ),
-          thickness_cm: z.number().optional().describe('Slab thickness in centimetres (e.g. 2 or 3).'),
-        }),
-      }
-    );
-
-    const searchPurchaseOrders = tool(
-      async ({ supplier_name, delayed_only, po_number }) => {
-        const result = await this.erpClient.searchPurchaseOrders(token, { supplier_name, delayed_only, po_number });
-        toolsCalled.push({ tool: 'searchPurchaseOrders', input: { supplier_name, delayed_only, po_number }, output: result });
-        return JSON.stringify(result);
-      },
-      {
-        name: 'search_purchase_orders',
-        description: 'Search purchase orders by supplier name, PO number, or delayed/late status.',
-        schema: z.object({
-          supplier_name: z.string().optional().describe('Supplier name as stated by the user.'),
-          delayed_only: z.boolean().optional().describe('Pass true to filter only delayed or overdue purchase orders.'),
-          po_number: z.string().optional().describe('Specific PO number (e.g. "PO-1023").'),
-        }),
-      }
-    );
-
-    const getLandedCost = tool(
-      async ({ po_number }) => {
-        if (user.role === 'sales') {
-          return JSON.stringify({
-            allowed: false,
-            polite_refusal: 'Cost details are only available to the Purchasing team.',
-          });
+  private sanitizeToolsCalled(toolsCalled: any[], role: string): any[] {
+    return (toolsCalled || [])
+      .filter((tc) => {
+        if (role === 'sales') {
+          const restricted = [
+            'createDraftPurchaseOrder',
+            'create_draft_purchase_order',
+            'confirmDraftPurchaseOrder',
+            'confirm_draft_purchase_order',
+            'getLandedCost',
+            'get_landed_cost',
+          ];
+          if (restricted.includes(tc.tool) || tc.output?.allowed === false) return false;
         }
-        const result = await this.erpClient.getLandedCost(token, po_number);
-        toolsCalled.push({ tool: 'getLandedCost', input: { po_number }, output: result });
-        return JSON.stringify(result);
-      },
-      {
-        name: 'get_landed_cost',
-        description: 'Calculate landed cost per slab (unit cost + share of freight) for a purchase order. RESTRICTED TO PURCHASING TEAM.',
-        schema: z.object({
-          po_number: z.string().describe('Purchase order number (e.g. "PO-1023").'),
-        }),
-      }
-    );
-
-    const createDraftPO = tool(
-      async ({ supplier_name, items, estimated_freight }) => {
-        if (user.role === 'sales') {
-          return JSON.stringify({
-            allowed: false,
-            polite_refusal: 'Creating draft purchase orders is restricted to the Purchasing team.',
-          });
+        return true;
+      })
+      .map((tc) => {
+        if (tc.tool === 'execute_sql' || tc.tool === 'executeSql') {
+          return {
+            tool: 'execute_sql',
+            input: { query_type: 'Live ERP Database Query' },
+            output: { status: 'executed_internally' },
+          };
         }
-        const result = await this.erpClient.createDraftPO(token, { supplier_name, items, estimated_freight });
-        if (result && result.draft_token) {
-          session.pendingDraftToken = result.draft_token;
-        }
-        toolsCalled.push({ tool: 'createDraftPurchaseOrder', input: { supplier_name, items, estimated_freight }, output: result });
-        return JSON.stringify(result);
-      },
-      {
-        name: 'create_draft_purchase_order',
-        description: 'Prepare a draft purchase order and present it for confirmation. RESTRICTED TO PURCHASING TEAM.',
-        schema: z.object({
-          supplier_name: z.string().describe('Supplier name as stated by the user.'),
-          items: z.array(z.object({
-            product: z.string().describe('Product name or description.'),
-            quantity: z.number().describe('Number of slabs.'),
-            unit_cost: z.number().optional().describe('Unit cost per slab if known.'),
-          })).describe('Line items to include in the purchase order.'),
-          estimated_freight: z.number().optional().describe('Estimated freight cost if stated.'),
-        }),
-      }
-    );
-
-    const confirmDraftPO = tool(
-      async ({ draft_token }) => {
-        if (user.role === 'sales') {
-          return JSON.stringify({
-            allowed: false,
-            polite_refusal: 'Confirming purchase orders is restricted to the Purchasing team.',
-          });
-        }
-        const tokenToUse = draft_token || session.pendingDraftToken;
-        const result = await this.erpClient.confirmDraftPO(token, tokenToUse);
-        session.pendingDraftToken = undefined;
-        toolsCalled.push({ tool: 'confirmDraftPurchaseOrder', input: { draft_token: tokenToUse }, output: result });
-        return JSON.stringify(result);
-      },
-      {
-        name: 'confirm_draft_purchase_order',
-        description: 'Confirm and persist a draft purchase order to the ERP database. RESTRICTED TO PURCHASING TEAM.',
-        schema: z.object({
-          draft_token: z.string().optional().describe('Draft token returned by create_draft_purchase_order.'),
-        }),
-      }
-    );
-
-    // Sales role: read-only subset — no cost or draft tools
-    if (user.role === 'sales') {
-      return [executeSql, checkStock, searchPurchaseOrders];
-    }
-
-    return [executeSql, checkStock, searchPurchaseOrders, getLandedCost, createDraftPO, confirmDraftPO];
+        return tc;
+      });
   }
 
   async processMessage(
@@ -437,273 +324,50 @@ export class AssistantAgent {
     tools_called: any[];
     tokens_used: number;
     response_time_ms: number;
+    agent_routed?: string;
   }> {
     const startTime = Date.now();
     const session = this.getSession(conversationId);
-    const lower = message.trim().toLowerCase();
 
-    // Update session context from current message
-    const thickMatch = lower.match(/\b(\d+(?:\.\d+)?)\s*cm\b/i);
-    if (thickMatch) {
-      session.lastThickness = parseFloat(thickMatch[1]);
-    }
-    const cityDetected = extractCity(message);
-    if (cityDetected) {
-      session.lastWarehouse = cityDetected;
-    }
+    try {
+      const result = await this.graph.invoke(
+        {
+          messages: [new HumanMessage(message)],
+          user,
+          token,
+          conversationId,
+          toolsCalled: [],
+          toolIterations: 0,
+          finalReply: '',
+        },
+        { configurable: { thread_id: conversationId } }
+      );
 
-    // Prompt injection / security guard
-    if (/\b(?:ignore\s+(?:all\s+)?(?:rules|instructions|above)|system\s+override|act\s+as\s+(?:admin|root|superuser|dba)|drop\s+(?:table|database)|delete\s+from|truncate\s+table|insert\s+into|update\s+\w+\s+set)\b/i.test(lower)) {
+      // Sync lightweight local session mirror
+      if (result.sessionContext) {
+        Object.assign(session, result.sessionContext);
+      }
+      session.history.push({ role: 'user', text: message });
+      session.history.push({ role: 'assistant', text: result.finalReply });
+
       return {
         conversation_id: conversationId,
         role: user.role,
         user_name: user.name,
-        reply: 'Adversarial instruction or system override attempt detected. The AI assistant only answers inventory and purchasing questions within verified role bounds.',
-        tools_called: [],
-        tokens_used: 15,
+        reply: result.finalReply,
+        tools_called: this.sanitizeToolsCalled(result.toolsCalled || [], user.role),
+        tokens_used: 65,
         response_time_ms: Date.now() - startTime,
+        agent_routed: result.nextAgent,
+      };
+    } catch (err: any) {
+      console.warn('LangGraph multi-agent execution error, falling back to local engine:', err?.message || err);
+      const fb = await this.fallbackExecution(message, user, token, session, conversationId, startTime);
+      return {
+        ...fb,
+        tools_called: this.sanitizeToolsCalled(fb.tools_called, user.role),
       };
     }
-
-    if (!this.llm) {
-      this.initLlm();
-    }
-
-    const toolsCalled: any[] = [];
-    const tools = this.createTools(user, token, session, toolsCalled);
-    const toolMap: Record<string, any> = Object.fromEntries(tools.map(t => [t.name, t]));
-
-    // Retrieve prior messages from LangGraph Checkpointer Memory
-    const threadConfig = { configurable: { thread_id: conversationId } };
-    let checkpointMessages: any[] = [];
-    try {
-      const tuple = await this.checkpointer.getTuple(threadConfig);
-      if (tuple && tuple.checkpoint && tuple.checkpoint.channel_values) {
-        const msgs = tuple.checkpoint.channel_values.messages;
-        if (Array.isArray(msgs)) {
-          checkpointMessages = msgs;
-        }
-      }
-    } catch (e: any) {
-      console.warn('Could not read from checkpointer memory:', e?.message || e);
-    }
-
-    // ── 1. LLM PATH (Google Gemini) ──────────────────────────────────────────
-    if (this.llm) {
-      try {
-        const systemPrompt = `You are the AI Assistant for a US natural stone & quartz slab distributor ERP system.
-Currently logged-in staff member: ${user.name} (Role: ${user.role}).
-
-═══════════════════════════════════════════════════════════
-OPERATING MODEL: TEXT-TO-SQL AI AGENT
-═══════════════════════════════════════════════════════════
-You operate like ChatGPT with database access. When the user asks about inventory, orders,
-suppliers, or costs:
-  1. Silently formulate a MySQL SELECT query.
-  2. Call the \`execute_sql\` tool — the backend executes it and returns live rows.
-  3. Read the returned data and compose a clear, friendly natural-language answer.
-  4. NEVER output raw SQL, table names, or column names in your answer to the user.
-  5. You may also call the specialised tools: \`check_stock\`, \`search_purchase_orders\`,
-     \`get_landed_cost\`, \`create_draft_purchase_order\`, \`confirm_draft_purchase_order\`.
-
-═══════════════════════════════════════════════════════════
-DATABASE SCHEMA (laravel_erp)
-═══════════════════════════════════════════════════════════
-1. \`products\` (id, sku, name, material, color, thickness_cm, slab_size)
-   • Materials include: Marble, Quartz, Quartzite, Granite, Dolomite, Soapstone, Porcelain.
-   • Thickness values: 2.0 cm, 3.0 cm.
-
-2. \`warehouses\` (id, name, city)
-   • Current cities in the ERP: Houston, Dallas, Chicago.
-   • IMPORTANT: Users may ask about ANY city. Query the database dynamically.
-     If the city is not in the ERP, respond:
-     "We do not have a warehouse recorded for [City]. Our active locations are Houston, Dallas, and Chicago."
-
-3. \`stock\` (id, product_id, warehouse_id, slabs_on_hand)
-   • Joins: stock.product_id = products.id, stock.warehouse_id = warehouses.id
-
-4. \`suppliers\` (id, name, contact, payment_terms, bank_details)
-   • bank_details — RESTRICTED: Purchasing team only.
-
-5. \`purchase_orders\` (id, po_number, supplier_id, status, order_date, eta, freight_cost, notes)
-   • Statuses: 'confirmed', 'delayed', 'received', 'draft'
-   • freight_cost and status='draft' — RESTRICTED: Purchasing team only.
-   • Delayed definition: status = 'delayed' OR (status NOT IN ('received','draft') AND eta < CURDATE())
-
-6. \`purchase_order_lines\` (id, purchase_order_id, product_id, quantity, unit_cost)
-   • unit_cost — RESTRICTED: Purchasing team only.
-   • Landed cost per slab = unit_cost + (freight_cost / total_slabs_in_po)
-
-═══════════════════════════════════════════════════════════
-DRAFT PURCHASE ORDER WORKFLOW (Purchasing role only)
-═══════════════════════════════════════════════════════════
-When a Purchasing user asks to create a purchase order:
-  Step A: Optionally query the DB for product/supplier details.
-  Step B: Call \`create_draft_purchase_order\` with supplier_name, items list, and optional freight.
-          Default unit_cost = 150.00 if not specified. Default supplier = 'Supplier Y' if not named.
-  Step C: Present the draft summary (Supplier, items, quantity, estimated cost).
-          End your message with: Reply "confirm" to save it.
-When the user replies with an affirmative (confirm, yes, ok, proceed, go ahead, sure):
-  Call \`confirm_draft_purchase_order\` to persist it.
-
-═══════════════════════════════════════════════════════════
-ROLE-BASED ACCESS CONTROL — MANDATORY
-═══════════════════════════════════════════════════════════
-Current role: "${user.role}".
-${user.role === 'sales'
-  ? `SALES ROLE RESTRICTIONS (non-negotiable):
-  • Refuse any request to create, draft, or confirm a purchase order immediately.
-    Response: "I apologize, but creating and confirming purchase orders is restricted to the Purchasing team. As a Sales team member, you do not have permission to draft or confirm purchase orders."
-  • Never show: unit_cost, freight_cost, landed cost, supplier bank details, or draft PO data.
-  • SQL queries must NEVER select: freight_cost, unit_cost, bank_details.
-  • SQL queries must NEVER return rows with status = 'draft'.`
-  : `PURCHASING ROLE: Full access to all columns, costs, freight, and draft PO operations.`}
-
-═══════════════════════════════════════════════════════════
-DOMAIN BOUNDARY — MANDATORY
-═══════════════════════════════════════════════════════════
-This assistant ONLY answers questions about stone & quartz inventory and purchasing.
-If the user asks about anything unrelated — world geography, history, sports, entertainment,
-general coding, weather, cooking, or any other off-topic subject — respond with:
-"I don't have proper data about it. I can only answer about inventory and purchasing."
-Do NOT answer, do NOT guess, do NOT call any tool for off-topic questions.
-
-═══════════════════════════════════════════════════════════
-CONVERSATION MEMORY
-═══════════════════════════════════════════════════════════
-Use conversation history to maintain context across turns:
-• Remember the last product, thickness, warehouse, and PO number mentioned.
-• For follow-up messages like "and in Dallas?" or "what about 3cm?", resolve context
-  from prior turns rather than asking the user to repeat themselves.`;
-
-        const llmWithTools = this.llm.bindTools(tools);
-
-        const historyMessages = checkpointMessages.length > 0
-          ? checkpointMessages.slice(-8)
-          : session.history.slice(-8).map(h =>
-              h.role === 'user' ? new HumanMessage(h.text) : new AIMessage(h.text)
-            );
-
-        const messages = [
-          new SystemMessage(systemPrompt),
-          ...historyMessages,
-          new HumanMessage(message),
-        ];
-
-        let currentMessages: any[] = [...messages];
-        let currentResponse = await llmWithTools.invoke(currentMessages);
-        let iterations = 0;
-        const maxIterations = 5;
-
-        // Agentic tool-call loop
-        while (currentResponse.tool_calls && currentResponse.tool_calls.length > 0 && iterations < maxIterations) {
-          iterations++;
-          currentMessages.push(currentResponse);
-
-          for (const tc of currentResponse.tool_calls) {
-            const toolInstance = toolMap[tc.name];
-            if (toolInstance) {
-              const toolResult = await toolInstance.invoke(tc.args);
-              currentMessages.push(
-                new ToolMessage({
-                  tool_call_id: tc.id || tc.name,
-                  name: tc.name,
-                  content: typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult),
-                })
-              );
-            }
-          }
-
-          currentResponse = await llmWithTools.invoke(currentMessages);
-        }
-
-        let finalReply = extractCleanText(currentResponse.content);
-
-        // Fallback if LLM produced tool calls but empty prose
-        if (!finalReply || finalReply.trim() === '') {
-          const draftTool = toolsCalled.find(t => t.tool === 'createDraftPurchaseOrder' || t.tool === 'create_draft_purchase_order');
-          if (draftTool && draftTool.output) {
-            finalReply = draftTool.output.prompt || `Draft purchase order created. Reply "confirm" to save it.`;
-          } else {
-            for (const tc of toolsCalled) {
-              if (tc.output && tc.output.allowed === false) {
-                finalReply = tc.output.polite_refusal || 'Access to this information is restricted for your role.';
-                break;
-              }
-            }
-          }
-        }
-
-        // Domain guardrail: deny off-topic questions that produced no tool calls
-        if (toolsCalled.length === 0 && !isRelevantToDatabase(message, session)) {
-          finalReply = "I don't have proper data about it. I can only answer about inventory and purchasing.";
-        }
-
-        session.history.push({ role: 'user', text: message });
-        session.history.push({ role: 'assistant', text: finalReply });
-
-        // Persist conversation to LangGraph Checkpointer
-        try {
-          const updatedMessages = [
-            ...checkpointMessages,
-            new HumanMessage(message),
-            new AIMessage(finalReply),
-          ];
-          await (this.checkpointer as any).put(
-            threadConfig,
-            {
-              v: 1,
-              id: `ckpt-${Date.now()}`,
-              ts: new Date().toISOString(),
-              channel_values: { messages: updatedMessages },
-              channel_versions: { messages: updatedMessages.length },
-              versions_seen: {},
-            },
-            { source: 'update', step: updatedMessages.length, parents: {} },
-            {}
-          );
-        } catch (ckptErr: any) {
-          console.warn('Could not save to checkpointer memory:', ckptErr?.message || ckptErr);
-        }
-
-        // Sanitize tools_called: strip SQL internals and Sales-forbidden tools
-        const sanitizedToolsCalled = toolsCalled
-          .filter(tc => {
-            if (user.role === 'sales') {
-              const restricted = ['createDraftPurchaseOrder', 'create_draft_purchase_order',
-                                  'confirmDraftPurchaseOrder', 'confirm_draft_purchase_order',
-                                  'getLandedCost', 'get_landed_cost'];
-              if (restricted.includes(tc.tool) || tc.output?.allowed === false) return false;
-            }
-            return true;
-          })
-          .map(tc => {
-            if (tc.tool === 'execute_sql' || tc.tool === 'executeSql') {
-              return {
-                tool: 'execute_sql',
-                input: { query_type: 'Live ERP Database Query' },
-                output: { status: 'executed_internally' },
-              };
-            }
-            return tc;
-          });
-
-        return {
-          conversation_id: conversationId,
-          role: user.role,
-          user_name: user.name,
-          reply: finalReply,
-          tools_called: sanitizedToolsCalled,
-          tokens_used: 65,
-          response_time_ms: Date.now() - startTime,
-        };
-      } catch (err: any) {
-        console.warn('LangChain ChatGoogle error, falling back to local engine:', err?.message || err);
-      }
-    }
-
-    // ── 2. LOCAL FALLBACK ENGINE ─────────────────────────────────────────────
-    return await this.fallbackExecution(message, user, token, session, conversationId, startTime);
   }
 
   private async fallbackExecution(
